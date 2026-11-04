@@ -25,6 +25,11 @@
     document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#121214' : '#ffffff');
     try { tg.setHeaderColor(dark ? '#121214' : '#ffffff'); tg.setBackgroundColor(dark ? '#121214' : '#ffffff'); } catch (e) {}
     tg.ready(); tg.expand();
+    // системная кнопка Telegram «Назад» вместо «Закрыть» везде, кроме главной
+    try {
+      const bb = tg.BackButton, upd = () => { const h = location.hash; (h && h !== '#' && h !== '#/') ? bb.show() : bb.hide(); };
+      bb.onClick(() => history.back()); addEventListener('hashchange', upd); upd();
+    } catch (e) {}
   }
 </script>
 <script src="app.js"></script>

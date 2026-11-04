@@ -1,5 +1,5 @@
 :root{--bg:#fff;--surf:#f3f3f5;--text:#111;--muted:#80808a;--accent:#ffdb4d;--on:#111;--line:#ececf0;
---top:env(safe-area-inset-top,0px);--bot:env(safe-area-inset-bottom,0px)}
+--top:calc(env(safe-area-inset-top,0px) + var(--tg-content-safe-area-inset-top,0px));--bot:env(safe-area-inset-bottom,0px)}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#121214;--surf:#222226;--text:#f2f2f5;--muted:#8d8d98;--line:#2a2a30}}
 :root[data-theme=dark]{--bg:#121214;--surf:#222226;--text:#f2f2f5;--muted:#8d8d98;--line:#2a2a30}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}

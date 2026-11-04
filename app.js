@@ -470,7 +470,7 @@ function me() {
     <h4>Размер текста</h4>${stp('fs', set.fs)}
     <h4>Межстрочный интервал</h4>${stp('lh', set.lh)}
     <h4>Озвучка: скорость</h4>${sg('rate', [.8, 1, 1.25, 1.5, 2].map(r => [r, r + '×']), set.rate || 1)}
-    ${sileroOK ? `<h4>Голос озвучки</h4>${sg('sv', SP.map(x => [x, `${VN[x] || x} (${VG[x] || ''})`]), set.sv || SP[0], 'wrap')}` : '<div class="meta" style="padding:8px 0">Нейроголос пока подключается — а пока читает голос вашего устройства.</div>'}
+    ${sileroOK ? `<h4>Голос озвучки</h4>${sg('sv', SP.map(x => [x, `${VN[x] || x} (${VG[x] || ''})`]), set.sv || SP[0], 'wrap')}` : '<div class="meta" style="padding:8px 0">Нейроголос подключается, это займёт около минуты.</div>'}
     <div style="display:grid;gap:10px;margin-top:14px"><button class="btn sec2" data-pa="reset:1">Сбросить настройки</button></div></div>
   <div class="card"><h2 style="margin:0 0 12px">Данные</h2><div style="display:grid;gap:10px">
     <button class="btn sec2" data-pa="exp:1">Сохранить резервную копию</button><button class="btn sec2" data-pa="imp:1">Восстановить из копии</button>${OFF.size ? `<button class="btn sec2" data-pa="offclr:1">Очистить офлайн-память · ${OFF.size}</button>` : ''}
@@ -756,9 +756,9 @@ function markTTS(i) {
   onPos();
 }
 function speakFrom(i, k = 0, checked) {
-  // нейроголос выбран, но сервис не отвечал: проверяем заново перед тем, как падать на системный голос
-  if (!checked && !sileroOK && set.engine !== 'browser') { checkSilero().then(ok => { if (!ok) toast('Читаю голосом устройства — нейроголос подключится позже'); speakFrom(i, k, true); }); return; }
-  if (eng() === 'silero') return speakSilero(i);
+  // только нейроголос: если сервис ещё поднимается, проверяем заново и просим чуть подождать
+  if (!sileroOK) { checkSilero().then(ok => { if (ok) speakSilero(i); else toast('Нейроголос подключается, попробуйте через минуту'); }); return; }
+  return speakSilero(i);
   if (!tts) return toast('Этот браузер не поддерживает озвучку');
   tts.cancel(); const gen = ++TTS.gen;
   Object.assign(TTS, { show: true, playing: true, i, k }); wake(true); drawCtl();
@@ -785,7 +785,7 @@ let sileroOK = false, SP = ['svetlana', 'dmitry'];
 const checkSilero = () => fetch('/api/tts/status').then(r => r.json()).then(d => { sileroOK = !!d.ok; const sp = (d.speakers || []).filter(x => x === 'svetlana' || x === 'dmitry'); if (sp.length) SP = sp; return sileroOK; }).catch(() => false);
 // сервис озвучки может подняться позже страницы: пока он недоступен, проверяем каждые 3 с (до 2 минут)
 checkSilero().then(ok => { if (ok) return; let n = 0; const t = setInterval(async () => { if (await checkSilero() || ++n > 40) clearInterval(t); }, 3000); });
-const eng = () => sileroOK ? 'silero' : 'browser';
+const eng = () => 'silero';
 function applyRate() { au.playbackRate = set.rate || 1; if (eng() === 'browser' && TTS.playing) speakFrom(TTS.i, TTS.k); else drawCtl(); }
 function waitUI(gen) {
   const t0 = performance.now(), typ = lat.tts;
@@ -819,7 +819,10 @@ function speakSilero(i) {
     au.src = `/api/tts?id=${R.id}&i=${TTS.i}&sp=${sp}`; au.playbackRate = set.rate || 1;
     waitUI(gen);
     au.onended = () => { if (gen === TTS.gen) { TTS.i++; play(); } };
-    au.onerror = () => { if (gen === TTS.gen) { TTS.key = null; sileroOK = false; toast('Читаю голосом устройства — нейроголос подключится позже'); speakFrom(TTS.i, 0, true); } };
+    au.onerror = () => { if (gen !== TTS.gen) return;
+      if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; } // тихо пробуем ещё раз
+      TTS.err = 0; TTS.key = null; pauseTTS(); toast('Нейроголос не ответил — нажмите ▶, чтобы продолжить'); };
+    au.onplaying = () => { TTS.err = 0; };
     au.play().catch(() => {});
     if (R.paras[TTS.i + 1]) fetch(`/api/tts?id=${R.id}&i=${TTS.i + 1}&sp=${sp}`, { headers: { Range: 'bytes=0-0' } }).catch(() => {}); // готовим следующий абзац заранее
   };
@@ -838,7 +841,7 @@ function audioPanel(el) {
   const G = { svetlana: 'жен.', dmitry: 'муж.' }, N = { svetlana: 'Светлана', dmitry: 'Дмитрий' };
   el.innerHTML =
     (sileroOK ? `<h4>Голос</h4><div class="seg wrap">${SP.map(x => `<button data-sv="${x}" class="${(set.sv || SP[0]) === x ? 'on' : ''}">${N[x] || x} (${G[x] || ''})</button>`).join('')}</div>`
-      : `<div class="meta" style="padding:0 0 12px">Нейроголос пока подключается — а пока читает голос вашего устройства.</div>`) +
+      : `<div class="meta" style="padding:0 0 12px">Нейроголос подключается, это займёт около минуты.</div>`) +
     `<h4>Скорость речи</h4><div class="seg">${[.8, 1, 1.25, 1.5, 2].map(r => `<button data-r="${r}" class="${set.rate === r ? 'on' : ''}">${r}×</button>`).join('')}</div>
     <h4 style="margin-top:16px">Таймер сна</h4><div class="seg">${[[0, 'Выкл'], [15, '15 мин'], [30, '30 мин'], [60, '60 мин']].map(([m, n]) => `<button data-sl="${m}" class="${TTS.sleep === m ? 'on' : ''}">${n}</button>`).join('')}</div>`;
   el.onclick = e => {
