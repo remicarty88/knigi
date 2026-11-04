@@ -218,3 +218,43 @@ h2{font-size:20px;font-weight:800;margin:0 16px 10px}
 /* не даём странице «тянуться» и сворачивать Mini App при прокрутке вверх */
 html,body{overscroll-behavior-y:none}
 #reader,#rscroll{overscroll-behavior:none}
+
+/* строка статуса озвучки занимает место всегда — плеер не прыгает */
+#reader.aud #rst:empty{display:block}
+#reader.aud #rst{min-height:18px;line-height:18px;white-space:nowrap}
+
+/* ===== обновление оформления: «книжная полка» — тёмная зелёная обложка, латунные акценты, обложки как настоящие книги ===== */
+:root{--bg:#f6f7f4;--surf:#e9ede7;--text:#17211c;--muted:#66746c;--accent:#8a6414;--on:#fff;--line:#dce2da;
+--serif:Georgia,"Noto Serif","PT Serif","Times New Roman",serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0f1512;--surf:#1a231f;--text:#ecefe9;--muted:#8b9a92;--accent:#d8aa4c;--on:#1c1404;--line:#24302a}}
+:root[data-theme=dark]{--bg:#0f1512;--surf:#1a231f;--text:#ecefe9;--muted:#8b9a92;--accent:#d8aa4c;--on:#1c1404;--line:#24302a}
+
+/* заголовки — с засечками, как в книге; остальной интерфейс остаётся на системном шрифте */
+h1,h2,.hero h1,.rl-t{font-family:var(--serif);letter-spacing:-.01em}
+h1{font-size:32px;font-weight:700;line-height:1.1}
+h2{font-size:22px;font-weight:700}
+.row b,.it b{font-family:var(--serif);font-weight:700}
+.hero h1{font-size:27px;line-height:1.15}
+
+/* главная фишка: обложки выглядят как корешок и переплёт настоящей книги */
+.cv{border-radius:3px 9px 9px 3px;box-shadow:0 1px 0 rgba(255,255,255,.06) inset,3px 7px 16px rgba(0,0,0,.32)}
+.cv::after{content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+  background:linear-gradient(90deg,rgba(0,0,0,.38) 0,rgba(255,255,255,.2) 2.5%,rgba(0,0,0,.14) 5%,transparent 12%),linear-gradient(180deg,rgba(255,255,255,.1),transparent 28%)}
+.cv span{z-index:1}
+.row .cv{border-radius:2px 6px 6px 2px}
+.hero .cv{border-radius:4px 12px 12px 4px;box-shadow:0 1px 0 rgba(255,255,255,.06) inset,6px 16px 34px rgba(0,0,0,.4)}
+.skel{border-radius:3px 9px 9px 3px}
+
+/* нижнее меню, плашка про бесплатность, чипсы, кнопки */
+#tabbar{background:color-mix(in srgb,var(--bg) 86%,transparent);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
+#tabbar a.on{color:var(--accent)}
+.free{background:none;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px 12px 12px 4px;font-weight:600}
+.chip{background:none;border:1px solid var(--line);font-weight:500}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--on)}
+.btn{border-radius:12px}
+.sbox{border:1px solid var(--line);background:var(--surf);border-radius:12px}
+.bar i{background:var(--accent)}
+.more{border:1px solid var(--line);background:none}
+
+/* подсветка озвучиваемого абзаца в тон латуни */
+#rtext .tts,#rtext p.tts{background:rgba(216,170,76,.28)}
