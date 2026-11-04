@@ -79,7 +79,7 @@ function fetchPage(id) {
         if (!r.ok) throw new Error('Книга недоступна для чтения (' + r.status + ')');
         const paras = parsePage(await r.text());
         console.log(`read ${id}: ${paras.length} абз., ${Date.now() - t0} мс (${base})`);
-        if (paras.length > 2) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(paras)); return paras; }
+        if (paras.length > 2) { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(paras)); } catch { trimCache(true); } return paras; }
         throw new Error('Пустая страница книги');
       } catch (e) {
         last = e; console.log(`read ${id}: попытка ${n} (${base}) не удалась — ${e.name === 'TimeoutError' ? 'таймаут' : e.message}`);
@@ -163,7 +163,7 @@ async function ttsWav(id, i, sp) {
     const r = await fetch(TTS_URL + '/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: p.t, speaker: sp }) });
     if (!r.ok) throw new Error('TTS: ' + r.status);
     const buf = Buffer.from(await r.arrayBuffer());
-    fs.writeFileSync(f, buf);
+    try { fs.writeFileSync(f, buf); } catch { trimCache(true); }
     return buf;
   })();
   inflight.set(f, job);
@@ -213,7 +213,7 @@ async function getImg(p) {
       const type = r.headers.get('content-type') || '';
       if (!r.ok || !type.startsWith('image/')) throw new Error('img ' + r.status);
       const buf = Buffer.from(await r.arrayBuffer());
-      fs.writeFileSync(f + '.bin', buf); fs.writeFileSync(f + '.ct', type);
+      try { fs.writeFileSync(f + '.bin', buf); fs.writeFileSync(f + '.ct', type); } catch { trimCache(true); }
       return remember(key, { buf, type, key });
     } catch (e) { imgBad.set(key, Date.now()); throw e; }
   });
@@ -271,14 +271,20 @@ async function warmAll() {
 }
 setTimeout(warmAll, 3000); setInterval(warmAll, 30 * 60 * 1000);
 
-// ---------- лимит размера озвучки на диске (CACHE_MB, по умолчанию 2000): самые старые файлы удаляются ----------
-function trimCache() {
+// ---------- лимит размера всей папки cache (CACHE_MB, по умолчанию 2000): самые старые файлы удаляются ----------
+function walk(dir, out = []) {
+  for (const n of fs.readdirSync(dir)) { const p = path.join(dir, n), st = fs.statSync(p); st.isDirectory() ? walk(p, out) : out.push({ p, size: st.size, t: st.mtimeMs }); }
+  return out;
+}
+function trimCache(urgent) {
   try {
-    const max = (+process.env.CACHE_MB || 2000) * 1048576;
-    const files = fs.readdirSync(CACHE).filter(n => /\.(mp3|wav)$/.test(n)).map(n => { const p = path.join(CACHE, n), st = fs.statSync(p); return { p, size: st.size, t: st.mtimeMs }; });
-    let total = files.reduce((a, f) => a + f.size, 0); if (total <= max) return;
-    for (const f of files.sort((a, b) => a.t - b.t)) { if (total <= max * 0.85) break; fs.unlinkSync(f.p); total -= f.size; }
-    console.log('кэш озвучки почищен');
+    let max = (+process.env.CACHE_MB || 2000) * 1048576;
+    const files = walk(CACHE); let total = files.reduce((a, f) => a + f.size, 0);
+    let free = Infinity; try { const s = fs.statfsSync(CACHE); free = s.bavail * s.bsize; } catch {}
+    if (urgent || free < 150 * 1048576) max = Math.min(max, total * 0.7); // место на исходе — освобождаем заметно больше
+    if (total <= max) return;
+    for (const f of files.sort((a, b) => a.t - b.t)) { if (total <= max * 0.85) break; try { fs.unlinkSync(f.p); total -= f.size; } catch {} }
+    console.log('кэш почищен, осталось', Math.round(total / 1048576), 'МБ');
   } catch {}
 }
 setTimeout(trimCache, 20000); setInterval(trimCache, 3600000);
