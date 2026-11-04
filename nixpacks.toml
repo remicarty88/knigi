@@ -1,0 +1,14 @@
+# Railway / Nixpacks: Node.js для сайта + Python для сервиса озвучки (edge-tts).
+# Явно ставим оба рантайма и обе группы зависимостей, иначе в образ попадает
+# только Node и сервис озвучки падает с "spawn python3 ENOENT".
+
+[phases.setup]
+nixPkgs = ["nodejs_22", "python312"]
+
+[phases.install]
+# --break-system-packages нужен, иначе pip падает с PEP 668
+# (error: externally-managed-environment) и сборка рушится на exit code 1.
+cmds = ["npm ci", "python3 -m pip install --break-system-packages --no-cache-dir -r requirements.txt"]
+
+[start]
+cmd = "node server.js --tts"
