@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import FlibustaAPI from 'flibusta';
@@ -34,11 +35,16 @@ async function viaMirrors(call) {
 }
 const api = { getAuthors: q => viaMirrors(a => a.getAuthors(q)) };
 
+const gzMem = new Map();
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
   '.json': 'application/json', '.svg': 'image/svg+xml' };
+const wantsGzip = req => /\bgzip\b/.test(req?.headers?.['accept-encoding'] || '');
 const json = (res, data, code = 200) => {
-  const buf = Buffer.from(JSON.stringify(data ?? null));
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': buf.length });
+  let buf = Buffer.from(JSON.stringify(data ?? null));
+  const h = { 'Content-Type': 'application/json; charset=utf-8' };
+  if (buf.length > 1024 && wantsGzip(res.req)) { buf = zlib.gzipSync(buf); h['Content-Encoding'] = 'gzip'; h.Vary = 'Accept-Encoding'; }
+  h['Content-Length'] = buf.length;
+  res.writeHead(code, h);
   res.end(buf);
 };
 
@@ -222,21 +228,60 @@ const warm = d => { for (const b of d?.items || []) if (typeof b.cover === 'stri
 const apiMem = new Map(), apiJobs = new Map();
 const API_DIR = path.join(ROOT, 'cache', 'api'); fs.mkdirSync(API_DIR, { recursive: true });
 const apiFile = key => path.join(API_DIR, crypto.createHash('sha1').update(key).digest('hex') + '.json');
-async function cached(key, fn, ttl = 600000) {
-  const c = apiMem.get(key); if (c && Date.now() - c.t < ttl) return c.d;
+// поход в библиотеку с сохранением результата (в память и на диск); параллельные одинаковые запросы объединяются
+function loadApi(key, fn) {
   if (apiJobs.has(key)) return apiJobs.get(key);
   const job = fn().then(d => {
-    const ok = d && Array.isArray(d.items) && d.items.length;
-    if (ok) { apiMem.set(key, { t: Date.now(), d }); try { fs.writeFileSync(apiFile(key), JSON.stringify(d)); } catch {} }
-    if (apiMem.size > 200) apiMem.delete(apiMem.keys().next().value); return d;
-  }).catch(e => { // библиотека не ответила: отдаём прошлый удачный ответ (из памяти или с диска), пусть и устаревший
-    if (c) return c.d;
-    try { return JSON.parse(fs.readFileSync(apiFile(key), 'utf8')); } catch {}
-    throw e;
-  });
-  apiJobs.set(key, job);
-  try { return await job; } finally { apiJobs.delete(key); }
+    if (d && Array.isArray(d.items) && d.items.length) {
+      apiMem.set(key, { t: Date.now(), d }); try { fs.writeFileSync(apiFile(key), JSON.stringify(d)); } catch {}
+      if (apiMem.size > 300) apiMem.delete(apiMem.keys().next().value);
+    }
+    return d;
+  }).finally(() => apiJobs.delete(key));
+  apiJobs.set(key, job); return job;
 }
+// есть сохранённый ответ (пусть устаревший) — отдаём его мгновенно и обновляем в фоне; нет — ждём библиотеку
+async function cached(key, fn, ttl = 600000) {
+  let c = apiMem.get(key);
+  if (!c) { try { const f = apiFile(key); c = { t: fs.statSync(f).mtimeMs, d: JSON.parse(fs.readFileSync(f, 'utf8')) }; apiMem.set(key, c); } catch {} }
+  if (c) { if (Date.now() - c.t >= ttl) loadApi(key, fn).catch(() => {}); return c.d; }
+  return loadApi(key, fn);
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const booksFn = (q, page, limit) => () => viaMirrors(a => a.getBooksByNameFromOpdsPaginated(q, page, limit));
+
+// ---------- прогрев: полки главной и первые книги подготавливаются заранее и обновляются раз в 30 минут ----------
+// должен совпадать со списком полок в app.js (SHELVES); можно переопределить переменной WARM_QUERIES (через запятую)
+const WARM_Q = (process.env.WARM_QUERIES || 'Шерлок Холмс,Дюна,Гарри Поттер,Война и мир,1984,Мастер и Маргарита').split(',').map(x => x.trim()).filter(Boolean);
+let warming = false;
+async function warmAll() {
+  if (warming) return; warming = true;
+  for (const q of WARM_Q) {
+    try {
+      const d = norm(await loadApi(`/api/books?q=${encodeURIComponent(q)}&limit=10`, booksFn(q, 0, 10)));
+      warm(d);
+      for (const b of (d.items || []).slice(0, 2)) { // тексты первых двух книг полки — чтобы открывались мгновенно
+        const id = String(b.id ?? '').replace(/\D/g, '');
+        if (id) { await fetchPage(id).catch(() => {}); await sleep(1500); }
+      }
+    } catch (e) { console.log('прогрев:', q, '—', String(e.message || e).slice(0, 100)); }
+    await sleep(1000);
+  }
+  warming = false; console.log('прогрев завершён');
+}
+setTimeout(warmAll, 3000); setInterval(warmAll, 30 * 60 * 1000);
+
+// ---------- лимит размера озвучки на диске (CACHE_MB, по умолчанию 2000): самые старые файлы удаляются ----------
+function trimCache() {
+  try {
+    const max = (+process.env.CACHE_MB || 2000) * 1048576;
+    const files = fs.readdirSync(CACHE).filter(n => /\.(mp3|wav)$/.test(n)).map(n => { const p = path.join(CACHE, n), st = fs.statSync(p); return { p, size: st.size, t: st.mtimeMs }; });
+    let total = files.reduce((a, f) => a + f.size, 0); if (total <= max) return;
+    for (const f of files.sort((a, b) => a.t - b.t)) { if (total <= max * 0.85) break; fs.unlinkSync(f.p); total -= f.size; }
+    console.log('кэш озвучки почищен');
+  } catch {}
+}
+setTimeout(trimCache, 20000); setInterval(trimCache, 3600000);
 
 // ---------- Telegram-бот: приветствие «всё бесплатно» + кнопка-мини-приложение ----------
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
@@ -286,7 +331,7 @@ http.createServer(async (req, res) => {
   const page = Number(q.get('page') || 0);
   try {
     if (url.pathname === '/api/books')
-      return json(res, warm(norm(await cached(req.url, () => viaMirrors(a => a.getBooksByNameFromOpdsPaginated(q.get('q') || '', page, Number(q.get('limit') || 20)))))));
+      return json(res, warm(norm(await cached(req.url, booksFn(q.get('q') || '', page, Number(q.get('limit') || 20))))));
     if (url.pathname === '/api/authors')
       return json(res, (await api.getAuthors(q.get('q') || '')) ?? []);
     if (url.pathname === '/api/author-books')
@@ -324,10 +369,18 @@ http.createServer(async (req, res) => {
       const { s = '' } = JSON.parse(body || '{}');
       return json(res, { hash: crypto.createHash('sha256').update('bookapp-v1:' + s).digest('hex') });
     }
-    // статика
-    let file = path.join(PUB, url.pathname === '/' ? 'index.html' : url.pathname);
-    if (!file.startsWith(PUB) || !fs.existsSync(file)) { res.writeHead(404); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    // статика: gzip и ETag (повторные открытия — 304 без передачи файла)
+    const file = path.join(PUB, url.pathname === '/' ? 'index.html' : decodeURIComponent(url.pathname));
+    let st; try { st = file.startsWith(PUB) ? fs.statSync(file) : null; } catch {}
+    if (!st || !st.isFile()) { res.writeHead(404); return res.end('Not found'); }
+    const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+    const h = { 'Content-Type': (MIME[path.extname(file)] || 'application/octet-stream') + (/\.(html|css|js|json|svg)$/.test(file) ? '; charset=utf-8' : ''), 'Cache-Control': 'no-cache', ETag: etag };
+    if (req.headers['if-none-match'] === etag) { res.writeHead(304, h); return res.end(); }
+    if (/\.(html|css|js|json|svg)$/.test(file) && wantsGzip(req)) {
+      let g = gzMem.get(file); if (!g || g.etag !== etag) { g = { etag, buf: zlib.gzipSync(fs.readFileSync(file)) }; gzMem.set(file, g); }
+      res.writeHead(200, { ...h, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', 'Content-Length': g.buf.length }); return res.end(g.buf);
+    }
+    res.writeHead(200, { ...h, 'Content-Length': st.size });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
     json(res, { error: String(e.message || e) }, 502);
