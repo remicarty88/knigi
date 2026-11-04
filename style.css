@@ -258,3 +258,57 @@ h2{font-size:22px;font-weight:700}
 
 /* подсветка озвучиваемого абзаца в тон латуни */
 #rtext .tts,#rtext p.tts{background:rgba(216,170,76,.28)}
+
+/* ===== v15: ровная сетка карточек, плавные переходы, тени без обрезания ===== */
+:root{--cw:112px;--ease:cubic-bezier(.22,.8,.24,1)}
+@media (min-width:600px){:root{--cw:136px}}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+a,button{touch-action:manipulation}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+#view{min-height:100vh;min-height:100dvh}
+#view.vin{animation:vin .24s var(--ease) backwards}
+@keyframes vin{from{opacity:0}}
+
+/* полки: тень обложек больше не обрезается, первая карточка не «прилипает» к краю при доскролле */
+.rail{padding:10px 16px 26px;margin:-10px 0 -18px;scroll-padding-inline:16px;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+.it{width:var(--cw)}
+.it .cv{width:100%}
+.it b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:14px;line-height:1.25;min-height:2.5em;margin-top:10px;overflow-wrap:anywhere}
+.it small{margin-top:2px;line-height:1.4}
+.it .bar{margin-top:8px}
+
+/* названия на обложках не вылезают за край */
+.cv span{display:-webkit-box;-webkit-line-clamp:6;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;max-width:100%}
+
+/* списки: обложка не растягивается, названия в 2 строки — все строки одинаковой аккуратности */
+.row{align-items:flex-start;transition:background-color .15s}
+.row .cv{align-self:flex-start}
+.row b{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
+.row:active{background:var(--surf)}
+
+/* жанры: все плитки одной высоты */
+.gg{grid-auto-rows:1fr}
+.gt{position:relative;overflow:hidden;min-height:84px;line-height:1.2;overflow-wrap:anywhere}
+.gt::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(180deg,rgba(255,255,255,.16),transparent 55%)}
+
+/* скелетон полки повторяет размер настоящей карточки — страница не «прыгает» при загрузке */
+.skel{width:112px;background:linear-gradient(90deg,rgba(128,128,128,.12) 25%,rgba(128,128,128,.25) 50%,rgba(128,128,128,.12) 75%);background-size:200% 100%;animation:shm 1.3s linear infinite}
+.sk-it{flex:none;width:var(--cw)}
+.sk-it .skel{width:100%}
+.sk-it .tx{height:55px;margin-top:10px;display:grid;gap:8px;align-content:start}
+.sk-it .sk{height:13px}.sk-it .l1{width:88%}.sk-it .l2{width:56%}
+
+/* плавность: нажатия, наведение, шторки, уведомления */
+.cv{transition:transform .3s var(--ease),box-shadow .3s var(--ease)}
+.gt,.chip,.btn,.more,.sopt,.rdel{transition:transform .18s var(--ease),background-color .18s,opacity .18s}
+.it:active .cv{transform:scale(.96)}
+.gt:active,.chip:active,.btn:active,.more:active,.sopt:active{transform:scale(.97)}
+@media (hover:hover){.it:hover .cv{transform:translateY(-4px)}.gt:hover{transform:translateY(-2px)}}
+#tabbar a,#tabbar a svg{transition:color .2s,opacity .2s}
+.sheetbg{animation:fade .2s ease-out}
+.sheet,.panel{animation:up .3s var(--ease)}
+@keyframes fade{from{opacity:0}}
+.snack,.toast{animation:snk .22s var(--ease)}
+@keyframes snk{from{opacity:0;transform:translate(-50%,10px)}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}

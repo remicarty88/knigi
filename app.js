@@ -208,6 +208,7 @@ function route() {
   closeReader();
   ({ '': home, search, lib, book, me, genre }[page ?? ''] || home)(arg);
   if (page !== 'book') window.scrollTo(0, 0);
+  view.classList.remove('vin'); void view.offsetWidth; view.classList.add('vin'); // мягкое появление экрана
 }
 window.addEventListener('hashchange', route);
 
@@ -219,7 +220,7 @@ function home() {
   view.innerHTML = `<h1>Книги</h1><div class="free">Все книги полностью бесплатны — без подписки и регистрации</div><div class="chips">${GENRES.map(g => `<a class="chip" href="#/genre/${g[0]}">${esc(g[1])}</a>`).join('')}</div>` +
     (reading.length ? `<div class="sec"><h2>Продолжить чтение</h2><div class="rail">${reading.map(railItem).join('')}</div></div>` : '') +
     (want.length ? `<div class="sec"><h2>Хочу прочитать</h2><div class="rail">${want.map(railItem).join('')}</div></div>` : '') +
-    SHELVES.map(([t], i) => `<div class="sec"><h2>${t}</h2><div class="rail" id="sh${i}">${'<div class="skel"></div>'.repeat(4)}</div></div>`).join('');
+    SHELVES.map(([t], i) => `<div class="sec"><h2>${t}</h2><div class="rail" id="sh${i}">${'<div class="sk-it"><div class="skel"></div><div class="tx"><div class="sk l1"></div><div class="sk l2"></div></div></div>'.repeat(5)}</div></div>`).join('');
   SHELVES.forEach(async ([, q], i) => {
     try {
       const d = await apiLoad(`/api/books?q=${encodeURIComponent(q)}&limit=10`, $('#sh' + i), 'Загрузка полки');
