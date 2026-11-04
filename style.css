@@ -214,3 +214,7 @@ h2{font-size:20px;font-weight:800;margin:0 16px 10px}
 #rtext{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 #rtext p.qd{background:rgba(255,200,40,.14);border-radius:4px}
 #rtext p.tts{background:rgba(255,200,40,.35)}
+
+/* не даём странице «тянуться» и сворачивать Mini App при прокрутке вверх */
+html,body{overscroll-behavior-y:none}
+#reader,#rscroll{overscroll-behavior:none}

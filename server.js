@@ -152,6 +152,15 @@ async function ttsWav(id, i, sp) {
   inflight.set(f, job);
   try { return await job; } finally { inflight.delete(f); }
 }
+// Упреждающая генерация: пока слушаете абзац, сервер уже готовит следующие (не больше 2 одновременно, чтобы не мешать текущему)
+const AHEAD = 5; let pfActive = 0; const pfQ = [];
+const pfRun = fn => { const go = () => { pfActive++; fn().catch(() => {}).finally(() => { pfActive--; pfQ.shift()?.(); }); }; pfActive < 2 ? go() : pfQ.push(go); };
+async function prefetchTTS(id, i, sp) {
+  try {
+    const b = await readBook(id); pfQ.length = 0; // при перемотке старую очередь сбрасываем
+    for (let k = 1; k <= AHEAD; k++) if (b.paras[i + k]) pfRun(() => ttsWav(id, i + k, sp));
+  } catch {}
+}
 // Range-ответы нужны, чтобы <audio> работал в Safari/iOS
 function sendAudio(req, res, buf, mime) {
   const total = buf.length, m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
@@ -285,7 +294,8 @@ http.createServer(async (req, res) => {
     if (url.pathname === '/api/tts') {
       const id = (q.get('id') || '').replace(/\D/g, ''), i = parseInt(q.get('i'), 10), sp = q.get('sp') || 'svetlana';
       if (!id || !(i >= 0) || !SPEAKERS.includes(sp)) return json(res, { error: 'bad params' }, 400);
-      return sendAudio(req, res, await ttsWav(id, i, sp), mimeOf(sp));
+      const buf = await ttsWav(id, i, sp); prefetchTTS(id, i, sp);
+      return sendAudio(req, res, buf, mimeOf(sp));
     }
     // хеш пароля (в базу пароль в открытом виде не попадает)
     if (url.pathname === '/api/hash' && req.method === 'POST') {
