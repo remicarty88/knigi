@@ -1,0 +1,9 @@
+{
+  "name": "bookapp",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": { "start": "node server.js",
+    "start:all": "node server.js --tts",
+    "tts": "python tts_server.py" },
+  "dependencies": { "flibusta": "latest" }
+}

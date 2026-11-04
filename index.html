@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+<title>Книги</title>
+</head>
+<body>
+<div id="view"></div>
+<nav id="tabbar"></nav>
+<div id="reader" hidden></div>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+  // внутри Telegram Mini App — тёмная тема как в клиенте и разворот на весь экран
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    const dark = tg.colorScheme !== 'light';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#121214' : '#ffffff');
+    try { tg.setHeaderColor(dark ? '#121214' : '#ffffff'); tg.setBackgroundColor(dark ? '#121214' : '#ffffff'); } catch (e) {}
+    tg.ready(); tg.expand();
+  }
+</script>
+<script src="app.js"></script>
+</body>
+</html>
