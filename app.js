@@ -157,11 +157,19 @@ async function apiLoad(path, box, label = 'Загрузка') {
   if (ok && !box.classList.contains('rail')) box.innerHTML = box.id === 'lbox' ? SK.text() : SK.rows(box.id === 'res' ? 6 : 3);
   const slow = setTimeout(() => { if (box && box.isConnected && !box.classList.contains('rail')) box.insertAdjacentHTML('beforeend', '<div class="slow">Сервер отвечает медленно, ещё немного…</div>'); }, 8000);
   try {
-    const ac = new AbortController(), to = setTimeout(() => ac.abort(), 60000);
-    let r, d;
-    try { r = await fetch(path, { signal: ac.signal }); d = await r.json().catch(() => ({})); }
-    catch (e) { throw new Error(e.name === 'AbortError' ? 'Сервер не ответил за 60 секунд' : 'Нет связи с сервером'); }
-    finally { clearTimeout(to); }
+    // до трёх попыток: сбой библиотеки обычно проходит со второго раза
+    let r, d, err;
+    for (let n = 0; n < 3; n++) {
+      const ac = new AbortController(), to = setTimeout(() => ac.abort(), n ? 30000 : 45000);
+      try {
+        r = await fetch(path, { signal: ac.signal }); d = await r.json().catch(() => ({}));
+        if (r.ok || (r.status < 500 && r.status !== 429)) { err = null; break; }
+        err = new Error('Библиотека пока не отвечает — обновите через минуту');
+      } catch (e) { err = new Error(e.name === 'AbortError' ? 'Библиотека отвечает слишком медленно — обновите через минуту' : 'Нет связи с сервером'); }
+      finally { clearTimeout(to); }
+      if (n < 2) await new Promise(res => setTimeout(res, 1200 * (n + 1)));
+    }
+    if (err) throw err;
     if (!r.ok) throw new Error(d.error || 'Ошибка сервера ' + r.status);
     const dt = (performance.now() - t0) / 1000; lat[key] = typ ? typ * .6 + dt * .4 : dt; store.set('lat', lat);
     return d;
@@ -183,6 +191,16 @@ const rowItem = (b, i = 99) => `<a class="row" href="#/book/${b.id}">${cover(b, 
 const rowLib = b => `<div class="rw">${rowItem(b)}<button class="rdel" data-st="${b.id}" aria-label="Статус книги">${ic('more', 20)}</button></div>`;
 
 /* ---------- роутер ---------- */
+// своя «история» переходов: history.back() в Telegram иногда ничего не делает, а так «назад» работает всегда
+const NAVS = [location.hash || '#/'];
+addEventListener('hashchange', () => {
+  const h = location.hash || '#/', n = NAVS.length;
+  if (n > 1 && NAVS[n - 2] === h) NAVS.pop(); else if (NAVS[n - 1] !== h) NAVS.push(h);
+});
+function goBack(fallback = '#/') {
+  if (NAVS.length > 1) { NAVS.pop(); location.hash = NAVS[NAVS.length - 1]; return; }
+  const h = location.hash || '#/'; if (h !== fallback && h !== '#/' && h !== '#') location.hash = fallback;
+}
 function route() {
   const [, page, arg] = location.hash.split('/');
   document.querySelectorAll('#tabbar a').forEach(a => a.classList.toggle('on', a.dataset.t === (page || 'home') || (page === 'book' && a.dataset.t === 'home') || (page === 'genre' && a.dataset.t === 'search')));
@@ -262,7 +280,7 @@ async function doSearch(restore) {
 }
 async function genre(key) {
   const g = GENRES.find(x => x[0] === key); if (!g) { location.hash = '#/search'; return; }
-  view.innerHTML = `<button class="back" onclick="history.length>1?history.back():location.hash='#/search'">${ic('left', 28)}</button><h1>${esc(g[1])}</h1><div id="glist"></div><div id="gsk">${SK.rows(3)}</div>`;
+  view.innerHTML = `<button class="back" onclick="goBack('#/search')">${ic('left', 28)}</button><h1>${esc(g[1])}</h1><div id="glist"></div><div id="gsk">${SK.rows(3)}</div>`;
   const seen = new Set(); let pending = g[2].length, shown = 0;
   // каждый запрос показывает свои книги сразу, как только пришёл ответ
   g[2].forEach(async q => {
@@ -306,7 +324,7 @@ function book(id) {
   const b = BOOKS[id]; if (!b) { location.hash = '#/'; return; }
   const [desc, ...meta] = descParts(b.description), p = prog[id], st = statusOf(id), has = OFF.has(id);
   const SL = { want: ['mark', 'Хочу прочитать'], read: ['play', 'Читаю'], done: ['check', 'Прочитано'] }[st] || ['plus', 'В библиотеку'];
-  view.innerHTML = `<button class="back" onclick="history.length>1?history.back():location.hash='#/'">${ic('left', 28)}</button>
+  view.innerHTML = `<button class="back" onclick="goBack()">${ic('left', 28)}</button>
   <div class="hero">${cover(b, true)}<h1>${esc(b.title)}</h1><div class="au">${esc(authorOf(b))}</div>
   <div class="acts"><a class="btn" href="#/read/${id}">${p ? `Продолжить · ${Math.round(p.p * 100)}%` : 'Читать'}</a><button class="btn sec2" id="sh">${ic(SL[0], 18, st === 'want')} ${SL[1]}</button></div>
   <div class="subacts"><button class="chip fb" id="off">${ic(has ? 'check' : 'download', 16)} ${has ? 'Доступна офлайн' : 'Скачать для офлайна'}</button></div></div>
@@ -626,11 +644,11 @@ async function openReader(id) {
       if (c === 'f') speakFrom(TTS.i + 1); if (c === 'b') speakFrom(Math.max(0, TTS.i - 1));
       if (c === 's') { const r = [.8, 1, 1.25, 1.5, 2]; set.rate = r[(r.indexOf(set.rate) + 1) % r.length]; store.set('set', set); applyRate(); }
       if (c === 'o') panel('audio'); if (c === 'x') stopTTS(); };
-    $r('rx').onclick = () => history.back(); $r('rmk').onclick = toggleMark;
+    $r('rx').onclick = () => goBack(); $r('rmk').onclick = toggleMark;
     $r('rnav').onclick = () => panel('nav'); $r('rset').onclick = () => panel('set');
     onPos();
   } catch (e) {
-    rd.innerHTML = `<div class="msg" style="padding-top:35vh">${errBox(e.message)}<br><div style="display:flex;gap:10px;justify-content:center"><button class="btn" onclick="openReader('${id}')">Повторить</button><button class="btn sec2" onclick="history.back()">Назад</button></div></div>`;
+    rd.innerHTML = `<div class="msg" style="padding-top:35vh">${errBox(e.message)}<br><div style="display:flex;gap:10px;justify-content:center"><button class="btn" onclick="openReader('${id}')">Повторить</button><button class="btn sec2" onclick="goBack()">Назад</button></div></div>`;
   }
 }
 window.addEventListener('resize', () => { if (R && !rd.hidden && $r('rwrap')) { const i = cur(); layout(); goPara(i); } });
@@ -750,10 +768,29 @@ function drawCtl() {
 function markTTS(i) {
   if (R) R.lock = Date.now() + 700; // программная прокрутка не считается перемоткой пользователя
   document.querySelector('#rtext .tts')?.classList.remove('tts');
-  const el = R.els[i]; if (!el) return; el.classList.add('tts');
+  const el = R.els[i]; if (!el) return; el.classList.add('tts'); TTS.fp = null;
+  if (set.mode === 'page') TTS.fp = Math.floor((el.offsetLeft + 2) / R.W);
   if (set.mode === 'page') { if (Math.floor((el.offsetLeft + 2) / R.W) !== Math.round($r('rwrap').scrollLeft / R.W)) goPara(i); }
   else { const r = el.getBoundingClientRect(); if (r.top < topLimit() || r.bottom > innerHeight - 110) goPara(i); }
   onPos();
+}
+// длинный абзац может идти через несколько страниц: пока он звучит, листаем вслед за голосом (по доле проигранного времени)
+function followPage() {
+  if (!TTS.playing || !R || !(au.duration > 0)) return;
+  const el = R.els[TTS.i], w = $r('rwrap'); if (!el || !w) return;
+  const f = Math.min(1, au.currentTime / au.duration);
+  if (set.mode === 'page') {
+    const fr = [...el.getClientRects()]; if (fr.length < 2) return;
+    const wr = w.getBoundingClientRect(), tot = fr.reduce((s, r) => s + r.height, 0) || 1;
+    let acc = 0, pg = 0;
+    for (const r of fr) { pg = Math.floor((r.left - wr.left + w.scrollLeft + 2) / R.W); acc += r.height / tot; if (f < acc) break; }
+    const prev = TTS.fp ?? pg; TTS.fp = pg;
+    // листаем только в момент, когда голос пересёк границу страницы, и никогда не возвращаем назад — ручное листание не ломается
+    if (pg > prev && pg > Math.round(w.scrollLeft / R.W)) { R.lock = Date.now() + 700; w.scrollLeft = pg * R.W; onPos(); }
+  } else {
+    const r = el.getBoundingClientRect(), y = r.top + f * r.height;
+    if (r.height > 120 && r.top < innerHeight && r.bottom > topLimit() && y > innerHeight - 200) { R.lock = Date.now() + 700; $r('rscroll').scrollTop += y - topLimit() - 80; onPos(); }
+  }
 }
 function speakFrom(i, k = 0, checked) {
   // только нейроголос: если сервис ещё поднимается, проверяем заново и просим чуть подождать
@@ -787,17 +824,26 @@ const checkSilero = () => fetch('/api/tts/status').then(r => r.json()).then(d =>
 checkSilero().then(ok => { if (ok) return; let n = 0; const t = setInterval(async () => { if (await checkSilero() || ++n > 40) clearInterval(t); }, 3000); });
 const eng = () => 'silero';
 function applyRate() { au.playbackRate = set.rate || 1; if (eng() === 'browser' && TTS.playing) speakFrom(TTS.i, TTS.k); else drawCtl(); }
-function waitUI(gen) {
-  const t0 = performance.now(), typ = lat.tts;
-  const tick = () => {
-    const st = $r('rst'); if (!st) return clearInterval(tm);
-    if (gen !== TTS.gen || !TTS.playing || au.readyState >= 3) { st.textContent = ''; return clearInterval(tm); }
-    const s = (performance.now() - t0) / 1000;
-    st.textContent = `Генерация голоса… прошло ${fmtT(s)}` + (typ ? (s < typ ? ` · обычно ~${fmtT(typ)}` : ' · дольше обычного, подождите') : '');
-  };
-  const tm = setInterval(tick, 250); tick();
-  au.addEventListener('canplay', () => { const dt = (performance.now() - t0) / 1000; lat.tts = lat.tts ? lat.tts * .6 + dt * .4 : dt; store.set('lat', lat); }, { once: true });
+function waitUI(gen, p) {
+  // короткая надпись без таймера; показывается, только если ждать пришлось дольше ~0,6 с
+  const tm = setTimeout(() => { const st = $r('rst'); if (st && gen === TTS.gen && TTS.playing) st.textContent = 'Готовлю голос…'; }, 600);
+  p.finally(() => { clearTimeout(tm); const st = $r('rst'); if (st) st.textContent = ''; });
 }
+/* озвучка: следующие абзацы скачиваются заранее, пока играет текущий, поэтому между абзацами нет пауз */
+const AB = new Map(); // ключ -> { p: промис, url }
+const abKey = (i, sp) => `${R.id}:${i}:${sp}`;
+function abGet(i, sp) {
+  const k = abKey(i, sp); if (AB.has(k)) return AB.get(k).p;
+  const e = {};
+  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(r => { if (!r.ok) throw 0; return r.blob(); })
+    .then(b => (e.url = URL.createObjectURL(b))).catch(() => { AB.delete(k); return null; });
+  AB.set(k, e); return e.p;
+}
+function abAhead(i, sp) {
+  for (let n = 1; n <= 3; n++) if (R.paras[i + n]) abGet(i + n, sp);
+  for (const [k, e] of AB) { const [id, j] = k.split(':'); if (id !== R.id || +j < i - 1 || +j > i + 6) { if (e.url) URL.revokeObjectURL(e.url); AB.delete(k); } }
+}
+function abClear() { for (const e of AB.values()) if (e.url) URL.revokeObjectURL(e.url); AB.clear(); }
 function setMedia() {
   try {
     const m = navigator.mediaSession, b = BOOKS[R.id]; if (!m) return;
@@ -809,22 +855,31 @@ function setMedia() {
 function speakSilero(i) {
   const sp = set.sv || SP[0], key = `${R.id}:${i}:${sp}`;
   if (TTS.show && TTS.key === key && au.paused && !au.ended && au.src) { TTS.playing = true; au.play().catch(() => {}); wake(true); drawCtl(); return; }
-  tts?.cancel(); const gen = ++TTS.gen;
+  tts?.cancel(); const gen = ++TTS.gen; au.pause(); // старый абзац не доигрывает после перемотки
   Object.assign(TTS, { show: true, playing: true, i, k: 0, key }); wake(true); drawCtl(); setMedia();
   au.onloadedmetadata = () => { au.playbackRate = set.rate || 1; };
+  const fail = () => {
+    if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; } // тихо пробуем ещё раз
+    TTS.err = 0; TTS.key = null; pauseTTS(); toast('Нейроголос не ответил — нажмите ▶, чтобы продолжить');
+  };
+  const start = (i0, url) => {
+    if (gen !== TTS.gen || TTS.i !== i0) return;
+    if (!url) return fail();
+    au.src = url; au.playbackRate = set.rate || 1;
+    au.onended = () => { if (gen === TTS.gen) { TTS.i++; play(); } };
+    au.onerror = () => { if (gen === TTS.gen) fail(); };
+    au.onplaying = () => { TTS.err = 0; }; au.ontimeupdate = followPage;
+    au.play().catch(() => {});
+    abAhead(i0, sp);
+  };
   const play = () => {
     if (gen !== TTS.gen) return;
     const p = R?.paras[TTS.i]; if (!p) { stopTTS(); return toast('Конец книги'); }
     TTS.key = `${R.id}:${TTS.i}:${sp}`; markTTS(TTS.i);
-    au.src = `/api/tts?id=${R.id}&i=${TTS.i}&sp=${sp}`; au.playbackRate = set.rate || 1;
-    waitUI(gen);
-    au.onended = () => { if (gen === TTS.gen) { TTS.i++; play(); } };
-    au.onerror = () => { if (gen !== TTS.gen) return;
-      if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; } // тихо пробуем ещё раз
-      TTS.err = 0; TTS.key = null; pauseTTS(); toast('Нейроголос не ответил — нажмите ▶, чтобы продолжить'); };
-    au.onplaying = () => { TTS.err = 0; };
-    au.play().catch(() => {});
-    if (R.paras[TTS.i + 1]) fetch(`/api/tts?id=${R.id}&i=${TTS.i + 1}&sp=${sp}`, { headers: { Range: 'bytes=0-0' } }).catch(() => {}); // готовим следующий абзац заранее
+    const i0 = TTS.i, ready = AB.get(abKey(i0, sp))?.url;
+    if (ready) return start(i0, ready); // уже скачан — играем сразу, без паузы
+    const pr = abGet(i0, sp); waitUI(gen, pr); abAhead(i0, sp);
+    pr.then(url => start(i0, url));
   };
   play();
 }
@@ -833,7 +888,7 @@ function pauseTTS() {
   TTS.gen++; tts?.cancel(); TTS.playing = false; wake(false); drawCtl();
 }
 function stopTTS() {
-  TTS.gen++; tts?.cancel(); au.pause(); au.removeAttribute('src'); TTS.key = null; clearTimeout(TTS.sleepT);
+  TTS.gen++; tts?.cancel(); au.pause(); au.removeAttribute('src'); abClear(); TTS.key = null; clearTimeout(TTS.sleepT);
   Object.assign(TTS, { show: false, playing: false, sleep: 0 }); wake(false);
   document.querySelector('#rtext .tts')?.classList.remove('tts'); drawCtl();
 }

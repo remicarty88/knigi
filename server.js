@@ -21,7 +21,18 @@ const MIRRORS = [...new Set([...(process.env.FLIBUSTA_URL || '').split(',').map(
 const BASE = MIRRORS[0];
 const PORT = process.env.PORT || 3000;
 const PUB = fs.existsSync(path.join(ROOT, 'public')) ? path.join(ROOT, 'public') : ROOT;
-const api = new (FlibustaAPI.default ?? FlibustaAPI)(BASE);
+const APIS = MIRRORS.map(m => new (FlibustaAPI.default ?? FlibustaAPI)(m));
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('таймаут')), ms))]);
+// запрос к библиотеке: по очереди пробуем зеркала (у каждого свой таймаут), пока одно не ответит
+async function viaMirrors(call) {
+  let last;
+  for (let round = 0; round < 2; round++) for (const a of APIS) {
+    try { return await withTimeout(Promise.resolve(call(a)), 12000); }
+    catch (e) { last = e; console.log('api:', String(e.message || e).slice(0, 120)); }
+  }
+  throw new Error('Библиотека пока не отвечает — обновите через минуту. ' + (last ? '' : ''));
+}
+const api = { getAuthors: q => viaMirrors(a => a.getAuthors(q)) };
 
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
   '.json': 'application/json', '.svg': 'image/svg+xml' };
@@ -209,10 +220,20 @@ const norm = d => (d && Array.isArray(d.items)) ? d : { items: [], hasNextPage: 
 const warm = d => { for (const b of d?.items || []) if (typeof b.cover === 'string' && b.cover.startsWith('/i/')) getImg(b.cover).catch(() => {}); return d; };
 // кэш ответов поиска на 10 минут (главная открывается мгновенно)
 const apiMem = new Map(), apiJobs = new Map();
+const API_DIR = path.join(ROOT, 'cache', 'api'); fs.mkdirSync(API_DIR, { recursive: true });
+const apiFile = key => path.join(API_DIR, crypto.createHash('sha1').update(key).digest('hex') + '.json');
 async function cached(key, fn, ttl = 600000) {
   const c = apiMem.get(key); if (c && Date.now() - c.t < ttl) return c.d;
   if (apiJobs.has(key)) return apiJobs.get(key);
-  const job = fn().then(d => { apiMem.set(key, { t: Date.now(), d }); if (apiMem.size > 200) apiMem.delete(apiMem.keys().next().value); return d; });
+  const job = fn().then(d => {
+    const ok = d && Array.isArray(d.items) && d.items.length;
+    if (ok) { apiMem.set(key, { t: Date.now(), d }); try { fs.writeFileSync(apiFile(key), JSON.stringify(d)); } catch {} }
+    if (apiMem.size > 200) apiMem.delete(apiMem.keys().next().value); return d;
+  }).catch(e => { // библиотека не ответила: отдаём прошлый удачный ответ (из памяти или с диска), пусть и устаревший
+    if (c) return c.d;
+    try { return JSON.parse(fs.readFileSync(apiFile(key), 'utf8')); } catch {}
+    throw e;
+  });
   apiJobs.set(key, job);
   try { return await job; } finally { apiJobs.delete(key); }
 }
@@ -265,11 +286,11 @@ http.createServer(async (req, res) => {
   const page = Number(q.get('page') || 0);
   try {
     if (url.pathname === '/api/books')
-      return json(res, warm(norm(await cached(req.url, () => api.getBooksByNameFromOpdsPaginated(q.get('q') || '', page, Number(q.get('limit') || 20))))));
+      return json(res, warm(norm(await cached(req.url, () => viaMirrors(a => a.getBooksByNameFromOpdsPaginated(q.get('q') || '', page, Number(q.get('limit') || 20)))))));
     if (url.pathname === '/api/authors')
       return json(res, (await api.getAuthors(q.get('q') || '')) ?? []);
     if (url.pathname === '/api/author-books')
-      return json(res, warm(norm(await cached(req.url, () => api.getBooksByAuthorOpdsPaginated(q.get('id'), page, 20)))));
+      return json(res, warm(norm(await cached(req.url, () => viaMirrors(a => a.getBooksByAuthorOpdsPaginated(q.get('id'), page, 20))))));
     // прокси обложек: кэш на диске и в памяти, браузер хранит год
     if (url.pathname === '/api/img') {
       const p = q.get('p') || '';
