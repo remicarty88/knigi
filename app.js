@@ -160,7 +160,7 @@ async function apiLoad(path, box, label = 'Загрузка') {
     // до трёх попыток: сбой библиотеки обычно проходит со второго раза
     let r, d, err;
     for (let n = 0; n < 3; n++) {
-      const ac = new AbortController(), to = setTimeout(() => ac.abort(), n ? 30000 : 45000);
+      const ac = new AbortController(), to = setTimeout(() => ac.abort(), n ? 20000 : 30000);
       try {
         r = await fetch(path, { signal: ac.signal }); d = await r.json().catch(() => ({}));
         if (r.ok || (r.status < 500 && r.status !== 429)) { err = null; break; }
@@ -254,8 +254,10 @@ function search() {
   view.querySelectorAll('[data-m]').forEach(c => c.onclick = () => { S.mode = c.dataset.m; S.authorId = null; S.page = 0; S.items = []; S.authors = []; search(); });
   doSearch(true);
 }
+let searchTok = 0; // номер последнего поиска: ответ на старый запрос не должен перезаписать новый
 async function doSearch(restore) {
   const res = $('#res'); if (!res) return;
+  const tok = ++searchTok;
   const authorsView = S.mode === 'authors' && !S.authorId;
   if (!S.q && !S.authorId) return res.innerHTML = S.mode === 'authors' ? '<div class="msg">Введите имя автора</div>' : genreGrid();
   const draw = more => {
@@ -268,16 +270,16 @@ async function doSearch(restore) {
     if (fresh) {
       let box = res;
       if (S.page > 0 && S.items.length && !authorsView) { $('#mb')?.remove(); box = document.createElement('div'); res.appendChild(box); } // подгрузка: скелет снизу, список остаётся
-      if (S.authorId) { const d = await apiLoad(`/api/author-books?id=${S.authorId}&page=${S.page}`, box, 'Загрузка книг автора'); S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
-      else if (S.mode === 'authors') S.authors = await apiLoad('/api/authors?q=' + encodeURIComponent(S.q), box, 'Поиск авторов');
-      else { const d = await apiLoad(`/api/books?q=${encodeURIComponent(S.q)}&page=${S.page}`, box, 'Поиск книг'); S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
+      if (S.authorId) { const d = await apiLoad(`/api/author-books?id=${S.authorId}&page=${S.page}`, box, 'Загрузка книг автора'); if (tok !== searchTok) return; S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
+      else if (S.mode === 'authors') { const a = await apiLoad('/api/authors?q=' + encodeURIComponent(S.q), box, 'Поиск авторов'); if (tok !== searchTok) return; S.authors = a; }
+      else { const d = await apiLoad(`/api/books?q=${encodeURIComponent(S.q)}&page=${S.page}`, box, 'Поиск книг'); if (tok !== searchTok) return; S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
     } else more = S.more;
     S.more = more;
     if (authorsView ? !S.authors.length : !S.items.length) return res.innerHTML = '<div class="msg">Ничего не найдено</div>';
     draw(more);
     res.querySelectorAll('[data-au]').forEach(a => a.onclick = () => { S.authorId = a.dataset.au; S.page = 0; S.items = []; doSearch(); });
     const mb = $('#mb'); if (mb) mb.onclick = () => { S.page++; doSearch(); };
-  } catch (e) { res.innerHTML = `${errBox(e.message)}`; }
+  } catch (e) { if (tok !== searchTok) return; res.innerHTML = `${errBox(e.message)}`; }
 }
 async function genre(key) {
   const g = GENRES.find(x => x[0] === key); if (!g) { location.hash = '#/search'; return; }

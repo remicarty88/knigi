@@ -25,13 +25,26 @@ const PUB = fs.existsSync(path.join(ROOT, 'public')) ? path.join(ROOT, 'public')
 const APIS = MIRRORS.map(m => new (FlibustaAPI.default ?? FlibustaAPI)(m));
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('таймаут')), ms))]);
 // запрос к библиотеке: по очереди пробуем зеркала (у каждого свой таймаут), пока одно не ответит
+let best = 0; const mirrorBad = new Map(); // best — зеркало, которое отвечало последним; mirrorBad — до какого времени зеркало считаем мёртвым
 async function viaMirrors(call) {
+  // сначала спрашиваем самое живое зеркало; если оно молчит дольше 2 с, параллельно подключаются остальные — берём первый успешный ответ
+  const now = Date.now(), dead = i => (mirrorBad.get(i) || 0) > now;
+  const order = APIS.map((_, i) => i).sort((a, b) => (dead(a) - dead(b)) || (a === best ? -1 : b === best ? 1 : a - b));
   let last;
-  for (let round = 0; round < 2; round++) for (const a of APIS) {
-    try { return await withTimeout(Promise.resolve(call(a)), 12000); }
-    catch (e) { last = e; console.log('api:', String(e.message || e).slice(0, 120)); }
+  for (let round = 0; round < 2; round++) {
+    try {
+      return await new Promise((resolve, reject) => {
+        let left = order.length, done = false;
+        order.forEach((i, k) => setTimeout(() => {
+          if (done) return;
+          withTimeout((async () => call(APIS[i]))(), 9000).then(
+            r => { if (!done) { done = true; best = i; mirrorBad.delete(i); resolve(r); } },
+            e => { last = e; mirrorBad.set(i, Date.now() + 120000); console.log('api:', String(e.message || e).slice(0, 120)); if (--left === 0 && !done) reject(e); });
+        }, k * 2000));
+      });
+    } catch (e) { last = e; }
   }
-  throw new Error('Библиотека пока не отвечает — обновите через минуту. ' + (last ? '' : ''));
+  throw new Error('Библиотека пока не отвечает — обновите через минуту.');
 }
 const api = { getAuthors: q => viaMirrors(a => a.getAuthors(q)) };
 
@@ -209,9 +222,15 @@ async function getImg(p) {
   if (imgJobs.has(key)) return imgJobs.get(key);
   const job = run(async () => {
     try {
-      const r = await fetch(BASE + p, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(10000) });
-      const type = r.headers.get('content-type') || '';
-      if (!r.ok || !type.startsWith('image/')) throw new Error('img ' + r.status);
+      let r = null, type = '';
+      for (const m of [MIRRORS[best], ...MIRRORS.filter((_, k) => k !== best)]) {
+        try {
+          const x = await fetch(m + p, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) });
+          const t = x.headers.get('content-type') || '';
+          if (x.ok && t.startsWith('image/')) { r = x; type = t; break; }
+        } catch {}
+      }
+      if (!r) throw new Error('img');
       const buf = Buffer.from(await r.arrayBuffer());
       try { fs.writeFileSync(f + '.bin', buf); fs.writeFileSync(f + '.ct', type); } catch { trimCache(true); }
       return remember(key, { buf, type, key });
