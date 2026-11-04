@@ -1,0 +1,19 @@
+# Railway / Nixpacks: Node.js для сайта + Python для сервиса озвучки (edge-tts).
+# Python-пакеты ставим в виртуальное окружение /opt/venv (в системный Python Nix писать нельзя).
+# Если что-то пойдёт не так, server.js сам доустановит edge-tts при старте.
+
+[phases.setup]
+nixPkgs = ["nodejs_22", "python312"]
+
+[phases.install]
+cmds = [
+  "npm ci",
+  "python3 -m venv --copies /opt/venv",
+  "/opt/venv/bin/pip install -r requirements.txt"
+]
+
+[variables]
+PYTHON = "/opt/venv/bin/python"
+
+[start]
+cmd = "node server.js"
