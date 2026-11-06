@@ -1,7 +1,7 @@
 """TTS-сервис: локальный Piper (быстрый, офлайн). Единственный голос — Орфей.
 Запуск: python tts_server.py   (или через Node: автоматически вместе с server.js)
 """
-import json, os, threading, urllib.request
+import json, os, shutil, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get('TTS_PORT', '5005'))
@@ -40,19 +40,48 @@ def piper_ensure(name):
     os.makedirs(PIPER_DIR, exist_ok=True)
     base = f'{PIPER_MIRROR}/rhasspy/piper-voices/resolve/main/{fam}/{lang}/{voice}/{quality}/{mid}'
     for url, dst in ((base + '.onnx', onnx), (base + '.onnx.json', onnx + '.json')):
+        if os.path.exists(dst):
+            continue
         print('Скачиваю голос Piper:', os.path.basename(dst), flush=True)
         tmp = dst + '.part'
-        urllib.request.urlretrieve(url + '?download=true', tmp)
-        os.replace(tmp, dst)
+        try:
+            req = urllib.request.Request(url + '?download=true', headers={'User-Agent': 'knigi-tts/1.0'})
+            with urllib.request.urlopen(req, timeout=120) as src, open(tmp, 'wb') as out:
+                shutil.copyfileobj(src, out, 1024 * 1024)
+            if os.path.getsize(tmp) == 0:
+                raise RuntimeError('сервер вернул пустой файл')
+            os.replace(tmp, dst)
+        except Exception as e:
+            try: os.remove(tmp)
+            except OSError: pass
+            raise RuntimeError(f'Не удалось скачать {os.path.basename(dst)}: {e}') from e
     return onnx
 
 
-def synth_piper(text, speaker):
+def load_piper(speaker):
     with lock:
         v = _piper_cache.get(speaker)
         if v is None:
-            v = PiperVoice.load(piper_ensure(speaker))  # ~1 с на первый вызов
+            print('Загружаю голос Piper:', speaker, flush=True)
+            v = PiperVoice.load(piper_ensure(speaker))
             _piper_cache[speaker] = v
+            print('Голос Piper загружен:', speaker, flush=True)
+    return v
+
+
+def warm_piper():
+    while True:
+        try:
+            for speaker in SPEAKERS:
+                load_piper(speaker)
+            return
+        except Exception as e:
+            print('Не удалось подготовить голос Piper:', e, flush=True)
+            time.sleep(30)
+
+
+def synth_piper(text, speaker):
+    v = load_piper(speaker)
     sr = v.config.sample_rate
     enc = lameenc.Encoder()
     enc.set_bit_rate(PIPER_BITRATE); enc.set_in_sample_rate(sr); enc.set_channels(1); enc.set_quality(0)
@@ -79,7 +108,9 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith('/health'):
-            return self._send(200, json.dumps({'ok': piper_ok, 'model': MODEL, 'speakers': SPEAKERS}).encode(), 'application/json')
+            ready = piper_ok and all(s in _piper_cache for s in SPEAKERS)
+            return self._send(200, json.dumps({'ok': ready, 'loading': piper_ok and not ready,
+                                               'model': MODEL, 'speakers': SPEAKERS if ready else []}).encode(), 'application/json')
         self._send(404, b'{}', 'application/json')
 
     def do_POST(self):
@@ -99,4 +130,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     print('TTS готов, модель:', MODEL, '| голоса:', ', '.join(SPEAKERS) or '—', flush=True)
+    if piper_ok:
+        threading.Thread(target=warm_piper, daemon=True).start()
     ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
+
