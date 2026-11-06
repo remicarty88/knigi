@@ -24,26 +24,24 @@ const PORT = process.env.PORT || 3000;
 const PUB = fs.existsSync(path.join(ROOT, 'public')) ? path.join(ROOT, 'public') : ROOT;
 const APIS = MIRRORS.map(m => new (FlibustaAPI.default ?? FlibustaAPI)(m));
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('таймаут')), ms))]);
+// библиотека иногда отвечает медленно (холодный поиск бывает 8–12 с) — таймаут выше, иначе отдаём 502
+const API_TIMEOUT = +process.env.API_TIMEOUT || 20000;
 // запрос к библиотеке: по очереди пробуем зеркала (у каждого свой таймаут), пока одно не ответит
 let best = 0; const mirrorBad = new Map(); // best — зеркало, которое отвечало последним; mirrorBad — до какого времени зеркало считаем мёртвым
 async function viaMirrors(call) {
-  // сначала спрашиваем самое живое зеркало; если оно молчит дольше 2 с, параллельно подключаются остальные — берём первый успешный ответ
+  // спрашиваем самое живое зеркало; если оно молчит дольше 1,2 с, параллельно подключаются остальные — берём первый успешный ответ
   const now = Date.now(), dead = i => (mirrorBad.get(i) || 0) > now;
   const order = APIS.map((_, i) => i).sort((a, b) => (dead(a) - dead(b)) || (a === best ? -1 : b === best ? 1 : a - b));
-  let last;
-  for (let round = 0; round < 2; round++) {
-    try {
-      return await new Promise((resolve, reject) => {
-        let left = order.length, done = false;
-        order.forEach((i, k) => setTimeout(() => {
-          if (done) return;
-          withTimeout((async () => call(APIS[i]))(), 9000).then(
-            r => { if (!done) { done = true; best = i; mirrorBad.delete(i); resolve(r); } },
-            e => { last = e; mirrorBad.set(i, Date.now() + 120000); console.log('api:', String(e.message || e).slice(0, 120)); if (--left === 0 && !done) reject(e); });
-        }, k * 2000));
-      });
-    } catch (e) { last = e; }
-  }
+  const hit = await new Promise(resolve => {
+    let left = order.length, done = false;
+    order.forEach((i, k) => setTimeout(() => {
+      if (done) return;
+      withTimeout((async () => call(APIS[i]))(), API_TIMEOUT).then(
+        r => { if (!done) { done = true; best = i; mirrorBad.delete(i); resolve({ v: r }); } },
+        e => { mirrorBad.set(i, Date.now() + 120000); console.log('api:', String(e.message || e).slice(0, 120)); if (--left === 0 && !done) resolve(null); });
+    }, k * 1200));
+  });
+  if (hit) return hit.v;
   throw new Error('Библиотека пока не отвечает — обновите через минуту.');
 }
 const api = { getAuthors: q => viaMirrors(a => a.getAuthors(q)) };
@@ -77,13 +75,11 @@ function parsePage(h) {
   return decode(h).split('\n').map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean)
     .map(s => s.startsWith('@@H@@') ? { h: 1, t: s.slice(5).trim() } : { t: s }).filter(p => p.t);
 }
-// скачивание с таймаутом, повторами и дисковым кэшем (повторное открытие книги — мгновенно)
+// скачивание с таймаутом и повторами; на диск ничего не пишется — кэш только в памяти (сессия)
 const pageJobs = new Map();
 function fetchPage(id) {
   if (pageJobs.has(id)) return pageJobs.get(id);
   const job = (async () => {
-    const dir = path.join(ROOT, 'cache', 'books'), f = path.join(dir, id + '.json');
-    try { const c = JSON.parse(fs.readFileSync(f, 'utf8')); if (c.length > 2) return c; } catch {}
     let last;
     for (let n = 1; n <= 4; n++) {
       const t0 = Date.now(), base = MIRRORS[(n - 1) % MIRRORS.length];
@@ -92,7 +88,7 @@ function fetchPage(id) {
         if (!r.ok) throw new Error('Книга недоступна для чтения (' + r.status + ')');
         const paras = parsePage(await r.text());
         console.log(`read ${id}: ${paras.length} абз., ${Date.now() - t0} мс (${base})`);
-        if (paras.length > 2) { try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(f, JSON.stringify(paras)); } catch { trimCache(true); } return paras; }
+        if (paras.length > 2) return paras;
         throw new Error('Пустая страница книги');
       } catch (e) {
         last = e; console.log(`read ${id}: попытка ${n} (${base}) не удалась — ${e.name === 'TimeoutError' ? 'таймаут' : e.message}`);
@@ -129,12 +125,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CACHE = path.join(HERE, 'cache');
 fs.mkdirSync(CACHE, { recursive: true });
 const TTS_URL = `http://127.0.0.1:${process.env.TTS_PORT || 5005}`;
-const SPEAKERS = ['svetlana', 'dmitry', 'xenia', 'kseniya', 'baya', 'aidar', 'eugene'];
-const EDGE = ['svetlana', 'dmitry']; // edge-tts отдаёт mp3, Silero — wav
-const extOf = sp => EDGE.includes(sp) ? 'mp3' : 'wav';
-const mimeOf = sp => EDGE.includes(sp) ? 'audio/mpeg' : 'audio/wav';
-// Сервис озвучки (Python + edge-tts) запускается сам, даже если стартовая команда на хостинге просто «node server.js».
-// Отключить: флаг --no-tts или NO_TTS=1. Если edge-tts не поставился при сборке, он доустанавливается в ./pylibs.
+const SPEAKERS = ['ruslan'];
+const mimeOf = () => 'audio/mpeg'; // единственный голос — Piper (mp3)
+// Сервис озвучки (Python + Piper) запускается сам, даже если стартовая команда на хостинге просто «node server.js».
+// Отключить: флаг --no-tts или NO_TTS=1. Если piper-tts не поставился при сборке, он доустанавливается в ./pylibs.
 const PYLIBS = path.join(HERE, 'pylibs');
 const sh = (cmd, args, env = {}) => new Promise(res => {
   const p = spawn(cmd, args, { cwd: HERE, env: { ...process.env, ...env }, stdio: 'ignore' });
@@ -146,9 +140,9 @@ async function startTTS() {
   for (const c of cands) if (await sh(c, ['--version'])) { py = c; break; }
   if (!py) return console.log('Сервис озвучки не запустился: Python не найден. Читалка будет использовать системный голос браузера.');
   const env = { PYTHONPATH: [PYLIBS, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter), PYTHONUNBUFFERED: '1' };
-  if (!(await sh(py, ['-c', 'import edge_tts'], env))) {
-    console.log('edge-tts не найден, доустанавливаю в ./pylibs …');
-    await sh(py, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--target', PYLIBS, 'edge-tts'], env);
+  if (!(await sh(py, ['-c', 'import piper'], env))) {
+    console.log('piper-tts не найден, доустанавливаю в ./pylibs …');
+    await sh(py, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--target', PYLIBS, 'piper-tts', 'lameenc'], env);
   }
   let fails = 0;
   const run = () => {
@@ -165,31 +159,20 @@ async function startTTS() {
   run();
 }
 if (!process.argv.includes('--no-tts') && process.env.NO_TTS !== '1') startTTS();
+// Голос синтезируется «в прямом эфире»: mp3 нигде не сохраняется на диск, только дедуп одновременных запросов в памяти.
 const inflight = new Map();
 async function ttsWav(id, i, sp) {
-  const f = path.join(CACHE, `${id}_${i}_${sp}.${extOf(sp)}`);
-  if (fs.existsSync(f)) return fs.readFileSync(f);
-  if (inflight.has(f)) return inflight.get(f);
+  const key = `${id}:${i}:${sp}`;
+  if (inflight.has(key)) return inflight.get(key);
   const job = (async () => {
     const p = (await readBook(id)).paras[i];
     if (!p) throw new Error('Нет такого абзаца');
     const r = await fetch(TTS_URL + '/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: p.t, speaker: sp }) });
     if (!r.ok) throw new Error('TTS: ' + r.status);
-    const buf = Buffer.from(await r.arrayBuffer());
-    try { fs.writeFileSync(f, buf); } catch { trimCache(true); }
-    return buf;
+    return Buffer.from(await r.arrayBuffer());
   })();
-  inflight.set(f, job);
-  try { return await job; } finally { inflight.delete(f); }
-}
-// Упреждающая генерация: пока слушаете абзац, сервер уже готовит следующие (не больше 2 одновременно, чтобы не мешать текущему)
-const AHEAD = 5; let pfActive = 0; const pfQ = [];
-const pfRun = fn => { const go = () => { pfActive++; fn().catch(() => {}).finally(() => { pfActive--; pfQ.shift()?.(); }); }; pfActive < 2 ? go() : pfQ.push(go); };
-async function prefetchTTS(id, i, sp) {
-  try {
-    const b = await readBook(id); pfQ.length = 0; // при перемотке старую очередь сбрасываем
-    for (let k = 1; k <= AHEAD; k++) if (b.paras[i + k]) pfRun(() => ttsWav(id, i + k, sp));
-  } catch {}
+  inflight.set(key, job);
+  try { return await job; } finally { inflight.delete(key); }
 }
 // Range-ответы нужны, чтобы <audio> работал в Safari/iOS
 function sendAudio(req, res, buf, mime) {
@@ -383,9 +366,9 @@ http.createServer(async (req, res) => {
       } catch { return json(res, { ok: false }); }
     }
     if (url.pathname === '/api/tts') {
-      const id = (q.get('id') || '').replace(/\D/g, ''), i = parseInt(q.get('i'), 10), sp = q.get('sp') || 'svetlana';
+      const id = (q.get('id') || '').replace(/\D/g, ''), i = parseInt(q.get('i'), 10), sp = q.get('sp') || 'ruslan';
       if (!id || !(i >= 0) || !SPEAKERS.includes(sp)) return json(res, { error: 'bad params' }, 400);
-      const buf = await ttsWav(id, i, sp); prefetchTTS(id, i, sp);
+      const buf = await ttsWav(id, i, sp);
       return sendAudio(req, res, buf, mimeOf(sp));
     }
     // хеш пароля (в базу пароль в открытом виде не попадает)

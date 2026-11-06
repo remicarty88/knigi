@@ -96,46 +96,6 @@ function statusSheet(id, after) {
   };
 }
 
-/* ---------- офлайн-хранилище текстов книг (IndexedDB) ---------- */
-const OFF = new Map(); // id -> { pin, ts }: pin = скачано вручную, иначе автосохранено при чтении
-const idb = () => idb.p ||= new Promise((res, rej) => {
-  const r = indexedDB.open('bookapp', 1);
-  r.onupgradeneeded = () => { r.result.createObjectStore('texts', { keyPath: 'id' }); r.result.createObjectStore('meta', { keyPath: 'id' }); };
-  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-});
-const idbRun = async (stores, mode, fn) => {
-  const db = await idb();
-  return new Promise((res, rej) => {
-    const t = db.transaction(stores, mode); let out;
-    try { out = fn(...stores.map(n => t.objectStore(n))); } catch (e) { return rej(e); }
-    t.oncomplete = () => res(out && 'result' in out ? out.result : out); t.onerror = t.onabort = () => rej(t.error);
-  });
-};
-const offGet = id => idbRun(['texts'], 'readonly', s => s.get(id)).then(r => r?.paras || null).catch(() => null);
-async function offPut(id, paras, pin) {
-  try {
-    const keep = !!(pin || OFF.get(id)?.pin), ts = Date.now();
-    await idbRun(['texts', 'meta'], 'readwrite', (s, m) => { s.put({ id, paras }); m.put({ id, pin: keep, ts }); });
-    OFF.set(id, { pin: keep, ts });
-    // автосохранённые книги храним только 20 последних, скачанные вручную не трогаем
-    [...OFF.entries()].filter(([, v]) => !v.pin).sort((a, b) => b[1].ts - a[1].ts).slice(20).forEach(([k]) => offDel(k));
-  } catch {}
-}
-const offDel = id => { OFF.delete(id); return idbRun(['texts', 'meta'], 'readwrite', (s, m) => { s.delete(id); m.delete(id); }).catch(() => {}); };
-async function offLoad() { try { (await idbRun(['meta'], 'readonly', m => m.getAll()) || []).forEach(r => OFF.set(r.id, { pin: r.pin, ts: r.ts })); } catch {} }
-offLoad();
-async function toggleOffline(id, btn) {
-  if (OFF.has(id)) { await offDel(id); snack('Удалено из памяти устройства'); return book(id); }
-  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Скачиваем…';
-  try {
-    const d = await apiLoad('/api/read?id=' + id, null);
-    await offPut(id, d.paras, true);
-    if (!OFF.has(id)) throw new Error('не хватило места на устройстве');
-    snack('Книга сохранена — её можно читать без интернета');
-  } catch (e) { snack('Не получилось скачать: ' + e.message); }
-  if (location.hash === '#/book/' + id) book(id);
-}
-
 /* ---------- поделиться цитатой ---------- */
 async function shareQuote(q, id) {
   const b = BOOKS[id] || {}, au = authorOf(b);
@@ -250,11 +210,28 @@ function search() {
   view.innerHTML = `<h1>Поиск</h1><form class="sbox" id="sf"><input id="sq" type="search" placeholder="Книга или автор" value="${esc(S.q)}" enterkeyhint="search"></form>
   <div class="chips"><button class="chip ${S.mode === 'books' ? 'on' : ''}" data-m="books">Книги</button><button class="chip ${S.mode === 'authors' ? 'on' : ''}" data-m="authors">Авторы</button></div>
   <div id="res"></div>`;
-  $('#sf').onsubmit = e => { e.preventDefault(); S.q = $('#sq').value.trim(); S.authorId = null; S.page = 0; S.items = []; S.authors = []; doSearch(); $('#sq').blur(); };
+  let debT;
+  $('#sf').onsubmit = e => { e.preventDefault(); clearTimeout(debT); S.q = $('#sq').value.trim(); S.authorId = null; S.page = 0; S.items = []; S.authors = []; doSearch(); $('#sq').blur(); };
+  // живой поиск: пока печатаете, результаты подтягиваются сами (без нажатия Enter)
+  const inp = $('#sq');
+  inp.oninput = () => {
+    clearTimeout(debT);
+    const v = inp.value.trim();
+    debT = setTimeout(() => {
+      if (v === S.q || (v && v.length < 2)) return; // одну букву не ищем — слишком много совпадений
+      S.q = v; S.authorId = null; S.page = 0; S.items = []; S.authors = []; doSearch();
+    }, 400);
+  };
   view.querySelectorAll('[data-m]').forEach(c => c.onclick = () => { S.mode = c.dataset.m; S.authorId = null; S.page = 0; S.items = []; S.authors = []; search(); });
   doSearch(true);
 }
 let searchTok = 0; // номер последнего поиска: ответ на старый запрос не должен перезаписать новый
+// кэш результатов поиска на устройстве: повторный поиск и возврат назад открываются мгновенно
+let SC = store.get('sc', {});
+const scKey = () => (S.authorId ? 'a' + S.authorId : S.mode) + '|' + S.q + '|' + S.page;
+function scPut(k, v) { SC[k] = v; const ks = Object.keys(SC); if (ks.length > 40) ks.slice(0, 20).forEach(x => delete SC[x]); store.set('sc', SC); }
+// мгновенные совпадения по книгам, которые уже есть на устройстве (без обращения к библиотеке)
+const localMatches = q => { const s = q.toLowerCase(); return Object.values(BOOKS).filter(b => (b.title || '').toLowerCase().includes(s) || authorOf(b).toLowerCase().includes(s)).slice(0, 30); };
 async function doSearch(restore) {
   const res = $('#res'); if (!res) return;
   const tok = ++searchTok;
@@ -264,21 +241,37 @@ async function doSearch(restore) {
     if (authorsView) { res.innerHTML = S.authors.map(a => `<a class="row" data-au="${a.id}"><div><b>${esc(a.name)}</b><small>Книг: ${Math.max(a.books, 0)}</small></div></a>`).join(''); return; }
     res.innerHTML = S.items.map(rowItem).join('') + (more ? '<button class="more" id="mb">Показать ещё</button>' : '');
   };
+  const bind = () => {
+    res.querySelectorAll('[data-au]').forEach(a => a.onclick = () => { S.authorId = a.dataset.au; S.page = 0; S.items = []; doSearch(); });
+    const mb = $('#mb'); if (mb) mb.onclick = () => { S.page++; doSearch(); };
+  };
   const fresh = !restore || (!S.items.length && !S.authors.length);
   try {
     let more = false;
     if (fresh) {
+      const ck = scKey(), c = SC[ck];
+      if (c) { // мгновенно: ответ уже сохранён на устройстве
+        if (authorsView) S.authors = c.authors || []; else S.items = c.items || [];
+        more = S.more = c.more;
+        if (authorsView ? !S.authors.length : !S.items.length) return res.innerHTML = '<div class="msg">Ничего не найдено</div>';
+        draw(more); bind(); return;
+      }
+      // мгновенные совпадения из книг, уже известных устройству, пока идёт запрос к библиотеке
+      const quick = (!authorsView && S.q && S.page === 0) ? localMatches(S.q) : [];
       let box = res;
       if (S.page > 0 && S.items.length && !authorsView) { $('#mb')?.remove(); box = document.createElement('div'); res.appendChild(box); } // подгрузка: скелет снизу, список остаётся
+      if (quick.length) { // показываем совпадения сразу и не затираем их скелетом
+        res.innerHTML = quick.map(rowItem).join('') + '<div class="more" style="opacity:.55;pointer-events:none">Уточняем в библиотеке…</div>';
+        box = null;
+      }
       if (S.authorId) { const d = await apiLoad(`/api/author-books?id=${S.authorId}&page=${S.page}`, box, 'Загрузка книг автора'); if (tok !== searchTok) return; S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
       else if (S.mode === 'authors') { const a = await apiLoad('/api/authors?q=' + encodeURIComponent(S.q), box, 'Поиск авторов'); if (tok !== searchTok) return; S.authors = a; }
       else { const d = await apiLoad(`/api/books?q=${encodeURIComponent(S.q)}&page=${S.page}`, box, 'Поиск книг'); if (tok !== searchTok) return; S.items = S.items.concat(reg(d.items)); more = d.hasNextPage; }
+      scPut(ck, { items: S.items, authors: S.authors, more });
     } else more = S.more;
     S.more = more;
     if (authorsView ? !S.authors.length : !S.items.length) return res.innerHTML = '<div class="msg">Ничего не найдено</div>';
-    draw(more);
-    res.querySelectorAll('[data-au]').forEach(a => a.onclick = () => { S.authorId = a.dataset.au; S.page = 0; S.items = []; doSearch(); });
-    const mb = $('#mb'); if (mb) mb.onclick = () => { S.page++; doSearch(); };
+    draw(more); bind();
   } catch (e) { if (tok !== searchTok) return; res.innerHTML = `${errBox(e.message)}`; }
 }
 async function genre(key) {
@@ -325,16 +318,14 @@ function lib() {
 /* ---------- карточка книги ---------- */
 function book(id) {
   const b = BOOKS[id]; if (!b) { location.hash = '#/'; return; }
-  const [desc, ...meta] = descParts(b.description), p = prog[id], st = statusOf(id), has = OFF.has(id);
+  const [desc, ...meta] = descParts(b.description), p = prog[id], st = statusOf(id);
   const SL = { want: ['mark', 'Хочу прочитать'], read: ['play', 'Читаю'], done: ['check', 'Прочитано'] }[st] || ['plus', 'В библиотеку'];
   view.innerHTML = `<button class="back" onclick="goBack()">${ic('left', 28)}</button>
   <div class="hero">${cover(b, true)}<h1>${esc(b.title)}</h1><div class="au">${esc(authorOf(b))}</div>
-  <div class="acts"><a class="btn" href="#/read/${id}">${p ? `Продолжить · ${Math.round(p.p * 100)}%` : 'Читать'}</a><button class="btn sec2" id="sh">${ic(SL[0], 18, st === 'want')} ${SL[1]}</button></div>
-  <div class="subacts"><button class="chip fb" id="off">${ic(has ? 'check' : 'download', 16)} ${has ? 'Доступна офлайн' : 'Скачать для офлайна'}</button></div></div>
+  <div class="acts"><a class="btn" href="#/read/${id}">${p ? `Продолжить · ${Math.round(p.p * 100)}%` : 'Читать'}</a><button class="btn sec2" id="sh">${ic(SL[0], 18, st === 'want')} ${SL[1]}</button></div></div>
   <p class="desc">${esc(desc && desc.length > 20 ? desc : 'Описание отсутствует.')}</p>
   <div class="meta">${esc((b.categories || []).join(' · '))}<br>${esc(meta.filter(m => !/Скачиваний|Размер/.test(m)).join(' · '))}</div>`;
   $('#sh').onclick = () => statusSheet(id, () => book(id));
-  $('#off').onclick = e => toggleOffline(id, e.currentTarget);
 }
 
 /* ---------- аккаунт и синхронизация (Firebase Realtime Database, REST, без Auth) ---------- */
@@ -446,7 +437,9 @@ function exportData() {
 
 /* ---------- профиль ---------- */
 let authMode = 'login', authErr = '';
-const VN = { svetlana: 'Светлана', dmitry: 'Дмитрий' }, VG = { svetlana: 'жен.', dmitry: 'муж.', xenia: 'жен.', kseniya: 'жен.', baya: 'жен.', aidar: 'муж.', eugene: 'муж.' };
+const VN = { ruslan: 'Орфей' };
+const VG = { ruslan: 'муж.' };
+const vLabel = v => `${VN[v] || v} (${VG[v] || ''})`;
 const sg = (k, items, cur, cls = '') => `<div class="seg ${cls}">${items.map(([v, t, st]) => `<button data-pa="${k}:${v}" class="${String(cur) === String(v) ? 'on' : ''}"${st ? ` style="${st}"` : ''}>${t}</button>`).join('')}</div>`;
 async function pa(k, v, btn) {
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -458,7 +451,6 @@ async function pa(k, v, btn) {
   else if (k === 'sv') set.sv = v; else if (k === 'eng') set.engine = v;
   else if (k === 'rate') set.rate = +v; else if (k === 'goal') set.goal = +v;
   else if (k === 'reset') { if (!confirm('Сбросить оформление и настройки читалки?')) return; set = { mode: 'page', fs: 19, ff: 'serif', th: 'light', lh: 1.6, rate: 1, goal: set.goal }; }
-  else if (k === 'offclr') { if (!confirm('Удалить сохранённые тексты книг с устройства? Библиотека и прогресс останутся.')) return; for (const id of [...OFF.keys()]) await offDel(id); return me(); }
   else if (k === 'exp') return exportData();
   else if (k === 'imp') return $('#imp').click();
   else if (k === 'am') { authMode = v; authErr = ''; return me(); }
@@ -491,10 +483,10 @@ function me() {
     <h4>Размер текста</h4>${stp('fs', set.fs)}
     <h4>Межстрочный интервал</h4>${stp('lh', set.lh)}
     <h4>Озвучка: скорость</h4>${sg('rate', [.8, 1, 1.25, 1.5, 2].map(r => [r, r + '×']), set.rate || 1)}
-    ${sileroOK ? `<h4>Голос озвучки</h4>${sg('sv', SP.map(x => [x, `${VN[x] || x} (${VG[x] || ''})`]), set.sv || SP[0], 'wrap')}` : '<div class="meta" style="padding:8px 0">Нейроголос подключается, это займёт около минуты.</div>'}
+    ${sileroOK ? `<h4>Голос озвучки</h4>${sg('sv', SP.map(x => [x, vLabel(x)]), curVoice(), 'wrap')}` : '<div class="meta" style="padding:8px 0">Нейроголос подключается, это займёт около минуты.</div>'}
     <div style="display:grid;gap:10px;margin-top:14px"><button class="btn sec2" data-pa="reset:1">Сбросить настройки</button></div></div>
   <div class="card"><h2 style="margin:0 0 12px">Данные</h2><div style="display:grid;gap:10px">
-    <button class="btn sec2" data-pa="exp:1">Сохранить резервную копию</button><button class="btn sec2" data-pa="imp:1">Восстановить из копии</button>${OFF.size ? `<button class="btn sec2" data-pa="offclr:1">Очистить офлайн-память · ${OFF.size}</button>` : ''}
+    <button class="btn sec2" data-pa="exp:1">Сохранить резервную копию</button><button class="btn sec2" data-pa="imp:1">Восстановить из копии</button>
     <input type="file" id="imp" accept="application/json,.json" hidden></div>
     <div class="meta" style="padding:10px 0 0">В копию входят статусы книг, прогресс, закладки, цитаты, настройки и статистика.</div></div>
   <div class="card"><h2 style="margin:0 0 12px">Аккаунт</h2>${user
@@ -597,13 +589,11 @@ async function openReader(id) {
       st.textContent = t > typ * 1.6 ? 'Чуть дольше обычного, но уже скоро…' : p > .6 ? 'Почти готово…' : t > 1.5 ? 'Загружаем текст…' : 'Сейчас-сейчас, открываем книгу…';
     }, 120);
     let d; try {
-      const cached = await offGet(id); // сохранённая на устройстве книга открывается мгновенно и без сети
-      d = cached ? { paras: cached } : await (async () => { // если библиотека ответила не с первого раза — тихо пробуем ещё, пока не откроется
+      d = await (async () => { // если библиотека ответила не с первого раза — тихо пробуем ещё, пока не откроется
         let err; for (let n = 0; n < 3; n++) {
           try { return await apiLoad('/api/read?id=' + id, null, 'Загрузка книги'); }
           catch (er) { err = er; if (rd.hidden || /\(\d{3}\)/.test(er.message)) break; const st = $r('rls'); if (st) st.textContent = 'Книга подгружается, пробуем ещё раз…'; await new Promise(r => setTimeout(r, 1200)); }
         } throw err; })();
-      if (!cached) offPut(id, d.paras, false);
     } finally { clearInterval(tm); }
     if (rd.hidden || location.hash !== '#/read/' + id) return;
     R = { id, paras: d.paras, heads: [] };
@@ -725,7 +715,7 @@ function panel(kind, tab = 'toc') {
 }
 /* ---------- озвучка (бесплатный синтез речи браузера) ---------- */
 const tts = window.speechSynthesis;
-const TTS = { show: false, playing: false, i: 0, k: 0, gen: 0, sleep: 0, sleepT: 0 };
+const TTS = { show: false, playing: false, i: 0, k: 0, gen: 0, sleep: 0, sleepT: 0, sp: 'svetlana' };
 let wl = null;
 async function wake(on) {
   try { if (on && navigator.wakeLock && !wl) { wl = await navigator.wakeLock.request('screen'); wl.onrelease = () => wl = null; }
@@ -778,10 +768,9 @@ function markTTS(i) {
   onPos();
 }
 // длинный абзац может идти через несколько страниц: пока он звучит, листаем вслед за голосом (по доле проигранного времени)
-function followPage() {
-  if (!TTS.playing || !R || !(au.duration > 0)) return;
+function followFrac(f) {
+  if (!TTS.playing || !R) return;
   const el = R.els[TTS.i], w = $r('rwrap'); if (!el || !w) return;
-  const f = Math.min(1, au.currentTime / au.duration);
   if (set.mode === 'page') {
     const fr = [...el.getClientRects()]; if (fr.length < 2) return;
     const wr = w.getBoundingClientRect(), tot = fr.reduce((s, r) => s + r.height, 0) || 1;
@@ -795,6 +784,8 @@ function followPage() {
     if (r.height > 120 && r.top < innerHeight && r.bottom > topLimit() && y > innerHeight - 200) { R.lock = Date.now() + 700; $r('rscroll').scrollTop += y - topLimit() - 80; onPos(); }
   }
 }
+// запасной вариант (без MediaSource): доля проигранного берётся из длительности текущего файла
+function followPage() { if (!TTS.playing || !R || !(au.duration > 0)) return; followFrac(Math.min(1, au.currentTime / au.duration)); }
 function speakFrom(i, k = 0, checked) {
   // только нейроголос: если сервис ещё поднимается, проверяем заново и просим чуть подождать
   if (!sileroOK) { checkSilero().then(ok => { if (ok) speakSilero(i); else toast('Нейроголос подключается, попробуйте через минуту'); }); return; }
@@ -819,34 +810,37 @@ function speakFrom(i, k = 0, checked) {
   };
   run();
 }
-/* ---------- Silero (нейронный голос с сервера) ---------- */
+/* ---------- нейроголос с сервера (Piper) ---------- */
 const au = new Audio(); au.preload = 'auto';
-let sileroOK = false, SP = ['svetlana', 'dmitry'];
-const checkSilero = () => fetch('/api/tts/status').then(r => r.json()).then(d => { sileroOK = !!d.ok; const sp = (d.speakers || []).filter(x => x === 'svetlana' || x === 'dmitry'); if (sp.length) SP = sp; return sileroOK; }).catch(() => false);
+let sileroOK = false, SP = ['ruslan'];
+const VOICES = { ruslan: 1 };
+const curVoice = () => SP.includes(set.sv) ? set.sv : SP[0];
+const checkSilero = () => fetch('/api/tts/status').then(r => r.json()).then(d => { sileroOK = !!d.ok; const sp = (d.speakers || []).filter(x => VOICES[x]); if (sp.length) SP = sp; return sileroOK; }).catch(() => false);
 // сервис озвучки может подняться позже страницы: пока он недоступен, проверяем каждые 3 с (до 2 минут)
 checkSilero().then(ok => { if (ok) return; let n = 0; const t = setInterval(async () => { if (await checkSilero() || ++n > 40) clearInterval(t); }, 3000); });
 const eng = () => 'silero';
-function applyRate() { au.playbackRate = set.rate || 1; if (eng() === 'browser' && TTS.playing) speakFrom(TTS.i, TTS.k); else drawCtl(); }
+function applyRate() { au.playbackRate = set.rate || 1; drawCtl(); }
 function waitUI(gen, p) {
   // короткая надпись без таймера; показывается, только если ждать пришлось дольше ~0,6 с
   const tm = setTimeout(() => { const st = $r('rst'); if (st && gen === TTS.gen && TTS.playing) st.textContent = 'Готовлю голос…'; }, 600);
   p.finally(() => { clearTimeout(tm); const st = $r('rst'); if (st) st.textContent = ''; });
 }
-/* озвучка: следующие абзацы скачиваются заранее, пока играет текущий, поэтому между абзацами нет пауз */
-const AB = new Map(); // ключ -> { p: промис, url }
+/* следующие абзацы скачиваются заранее, пока играет текущий: между абзацами нет пауз */
+const AHEAD = 4;
+const AB = new Map(); // ключ -> { p: промис, buf: ArrayBuffer }
 const abKey = (i, sp) => `${R.id}:${i}:${sp}`;
 function abGet(i, sp) {
   const k = abKey(i, sp); if (AB.has(k)) return AB.get(k).p;
   const e = {};
-  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(r => { if (!r.ok) throw 0; return r.blob(); })
-    .then(b => (e.url = URL.createObjectURL(b))).catch(() => { AB.delete(k); return null; });
+  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+    .then(b => (e.buf = b)).catch(() => { AB.delete(k); return null; });
   AB.set(k, e); return e.p;
 }
 function abAhead(i, sp) {
-  for (let n = 1; n <= 3; n++) if (R.paras[i + n]) abGet(i + n, sp);
-  for (const [k, e] of AB) { const [id, j] = k.split(':'); if (id !== R.id || +j < i - 1 || +j > i + 6) { if (e.url) URL.revokeObjectURL(e.url); AB.delete(k); } }
+  for (let n = 1; n <= AHEAD; n++) if (R.paras[i + n]) abGet(i + n, sp);
+  for (const [k] of [...AB]) { const [id, j] = k.split(':'); if (id !== R.id || +j < i - 1 || +j > i + 6) AB.delete(k); }
 }
-function abClear() { for (const e of AB.values()) if (e.url) URL.revokeObjectURL(e.url); AB.clear(); }
+function abClear() { AB.clear(); }
 function setMedia() {
   try {
     const m = navigator.mediaSession, b = BOOKS[R.id]; if (!m) return;
@@ -855,21 +849,108 @@ function setMedia() {
     m.setActionHandler('nexttrack', () => speakFrom(TTS.i + 1)); m.setActionHandler('previoustrack', () => speakFrom(Math.max(0, TTS.i - 1)));
   } catch {}
 }
-function speakSilero(i) {
-  const sp = set.sv || SP[0], key = `${R.id}:${i}:${sp}`;
-  if (TTS.show && TTS.key === key && au.paused && !au.ended && au.src) { TTS.playing = true; au.play().catch(() => {}); wake(true); drawCtl(); return; }
-  tts?.cancel(); const gen = ++TTS.gen; au.pause(); // старый абзац не доигрывает после перемотки
-  Object.assign(TTS, { show: true, playing: true, i, k: 0, key }); wake(true); drawCtl(); setMedia();
+// системный статус воспроизведения: помогает Android удерживать звук при выключенном экране
+function setPlayState(s) { try { if (navigator.mediaSession) navigator.mediaSession.playbackState = s || (TTS.playing ? 'playing' : 'paused'); } catch {} }
+
+/* ---------- непрерывный поток через MediaSource ----------
+   Раньше каждый абзац был отдельным файлом, а следующий запускался по событию «ended».
+   При выключенном экране Chrome на Android после конца файла теряет фоновое воспроизведение
+   (сбрасывает медиа-сервис) и звук пропадает. Поэтому склеиваем абзацы в один бесконечный
+   поток: элемент не «заканчивается», и озвучка не прерывается, даже когда экран погас. */
+const canMSE = typeof MediaSource === 'function' && MediaSource.isTypeSupported('audio/mpeg');
+let ms = null, sb = null, msUrl = null, appending = null, nextAppend = 0, eos = false, lastTrim = 0;
+const MQ = [], APP = []; // MQ — очередь на добавление, APP — границы абзацев на таймлайне потока
+function msReset() {
+  try { if (sb) sb.abort(); } catch {}
+  if (msUrl) { URL.revokeObjectURL(msUrl); msUrl = null; }
+  ms = null; sb = null; appending = null; nextAppend = 0; eos = false; lastTrim = 0; MQ.length = 0; APP.length = 0;
+}
+function msPump() {
+  if (!sb || appending || eos || !MQ.length || ms.readyState !== 'open' || sb.updating) return;
+  const e = MQ[0]; if (!e.buf) return; // абзацы добавляем строго по порядку
+  appending = MQ.shift();
+  try { sb.appendBuffer(new Uint8Array(appending.buf)); } catch { MQ.unshift(appending); appending = null; }
+}
+function msUpdateEnd() {
+  if (!appending) return msPump(); // это не добавление данных (например, подрезка буфера)
+  const i = appending.i; appending = null;
+  let end = 0; try { const b = sb.buffered; end = b.length ? b.end(b.length - 1) : 0; } catch {}
+  const prev = APP[APP.length - 1];
+  APP.push({ i, s: prev ? prev.e : 0, e: end });
+  if (i === TTS.i) onTick();
+  feed(); msPump();
+}
+function queuePara(n) {
+  const gen = TTS.gen, e = { i: n, buf: null };
+  MQ.push(e);
+  const get = () => abGet(n, TTS.sp).then(b => {
+    if (gen !== TTS.gen) return;
+    if (b) { e.buf = b; msPump(); return; }
+    setTimeout(() => { if (gen === TTS.gen && TTS.show) get(); }, 1500); // сеть подвела — пробуем снова
+  });
+  get();
+}
+function feed() {
+  if (!sb || !R) return;
+  const limit = Math.min(R.paras.length - 1, TTS.i + AHEAD);
+  for (let n = nextAppend; n <= limit; n++) { nextAppend = n + 1; queuePara(n); }
+}
+// какой абзац звучит сейчас — по времени на таймлайне склеенного потока
+function onTick() {
+  if (!R || !TTS.playing || !APP.length) return;
+  const t = au.currentTime; let a = APP[0];
+  for (let k = APP.length - 1; k >= 0; k--) if (t >= APP[k].s - 0.05) { a = APP[k]; break; }
+  if (a.i !== TTS.i) { TTS.i = a.i; TTS.key = `${R.id}:${a.i}:${TTS.sp}`; markTTS(a.i); setMedia(); }
+  followFrac(Math.min(1, Math.max(0, (t - a.s) / ((a.e - a.s) || 1))));
+  feed();
+  const last = R.paras.length - 1;
+  if (a.i === last && nextAppend > last && !eos && a.e - t < 0.35) { // книга закончилась — даём доиграть и завершаем
+    eos = true; try { if (ms.readyState === 'open' && !sb.updating) ms.endOfStream(); } catch {}
+  }
+  const now = Date.now(); // не копим прослушанное и предзагруженное в памяти
+  if (now - lastTrim > 5000) {
+    lastTrim = now;
+    for (const [k] of [...AB]) { const [id, j] = k.split(':'); if (id !== R.id || +j < TTS.i - 2 || +j > TTS.i + AHEAD + 2) AB.delete(k); }
+    if (sb && !sb.updating && t > 90) {
+      try { const b = sb.buffered; if (b.length && b.start(0) < t - 60) sb.remove(b.start(0), t - 60); } catch {}
+      while (APP.length > 1 && APP[0].e < t - 60) APP.shift();
+    }
+  }
+}
+function startMSE(gen, i, sp) {
+  TTS.sp = sp;
+  msReset();
+  const media = new MediaSource();
+  ms = media; msUrl = URL.createObjectURL(media);
+  au.onended = () => { if (gen === TTS.gen && TTS.show) { stopTTS(); toast('Конец книги'); } };
+  au.onerror = () => {};
+  au.onplaying = () => { TTS.err = 0; };
+  au.ontimeupdate = () => { if (gen === TTS.gen) onTick(); };
   au.onloadedmetadata = () => { au.playbackRate = set.rate || 1; };
+  media.addEventListener('sourceopen', () => {
+    if (gen !== TTS.gen) return;
+    try { sb = media.addSourceBuffer('audio/mpeg'); sb.mode = 'sequence'; } catch { sb = null; }
+    if (!sb) { if (msUrl) { URL.revokeObjectURL(msUrl); msUrl = null; } ms = null; return playChunks(gen, i, sp); } // MediaSource не осилил — старый способ
+    sb.addEventListener('updateend', () => { if (gen === TTS.gen) msUpdateEnd(); });
+    nextAppend = i;
+    const pr = abGet(i, sp); waitUI(gen, pr);
+    feed(); msPump();
+  });
+  au.src = msUrl; au.playbackRate = set.rate || 1;
+  au.play().catch(() => {});
+}
+// запасной способ: отдельный файл на каждый абзац (например, Safari без MediaSource)
+function playChunks(gen, i, sp) {
+  TTS.sp = sp; abClear();
   const fail = () => {
-    if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; } // тихо пробуем ещё раз
+    if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; }
     TTS.err = 0; TTS.key = null; pauseTTS(); toast('Нейроголос не ответил — нажмите ▶, чтобы продолжить');
   };
-  const start = (i0, url) => {
-    if (gen !== TTS.gen || TTS.i !== i0) return;
-    if (!url) return fail();
+  const start = (i0, buf, url) => {
+    if (gen !== TTS.gen || TTS.i !== i0) { if (url) URL.revokeObjectURL(url); return; }
+    if (!buf) return fail();
     au.src = url; au.playbackRate = set.rate || 1;
-    au.onended = () => { if (gen === TTS.gen) { TTS.i++; play(); } };
+    au.onended = () => { if (gen === TTS.gen) { URL.revokeObjectURL(url); TTS.i++; play(); } };
     au.onerror = () => { if (gen === TTS.gen) fail(); };
     au.onplaying = () => { TTS.err = 0; }; au.ontimeupdate = followPage;
     au.play().catch(() => {});
@@ -877,28 +958,37 @@ function speakSilero(i) {
   };
   const play = () => {
     if (gen !== TTS.gen) return;
-    const p = R?.paras[TTS.i]; if (!p) { stopTTS(); return toast('Конец книги'); }
+    if (!R?.paras[TTS.i]) { stopTTS(); return toast('Конец книги'); }
     TTS.key = `${R.id}:${TTS.i}:${sp}`; markTTS(TTS.i);
-    const i0 = TTS.i, ready = AB.get(abKey(i0, sp))?.url;
-    if (ready) return start(i0, ready); // уже скачан — играем сразу, без паузы
+    const i0 = TTS.i, buf = AB.get(abKey(i0, sp))?.buf;
+    if (buf) return start(i0, buf, URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' })));
     const pr = abGet(i0, sp); waitUI(gen, pr); abAhead(i0, sp);
-    pr.then(url => start(i0, url));
+    pr.then(b => start(i0, b, b && URL.createObjectURL(new Blob([b], { type: 'audio/mpeg' }))));
   };
   play();
 }
+function speakSilero(i) {
+  const sp = curVoice(), key = `${R.id}:${i}:${sp}`;
+  if (TTS.show && TTS.key === key && au.paused && !au.ended && au.src) { TTS.playing = true; au.play().catch(() => {}); wake(true); drawCtl(); setPlayState(); return; }
+  tts?.cancel(); const gen = ++TTS.gen; au.pause(); // старый абзац не доигрывает после перемотки
+  Object.assign(TTS, { show: true, playing: true, i, k: 0, key }); wake(true); drawCtl(); setMedia(); setPlayState();
+  if (canMSE) startMSE(gen, i, sp); else playChunks(gen, i, sp);
+}
 function pauseTTS() {
-  if (eng() === 'silero' && TTS.show) { au.pause(); TTS.playing = false; wake(false); drawCtl(); return; }
-  TTS.gen++; tts?.cancel(); TTS.playing = false; wake(false); drawCtl();
+  if (eng() === 'silero' && TTS.show) { au.pause(); TTS.playing = false; wake(false); drawCtl(); setPlayState('paused'); return; }
+  TTS.gen++; tts?.cancel(); TTS.playing = false; wake(false); drawCtl(); setPlayState('paused');
 }
 function stopTTS() {
-  TTS.gen++; tts?.cancel(); au.pause(); au.removeAttribute('src'); abClear(); TTS.key = null; clearTimeout(TTS.sleepT);
+  TTS.gen++; tts?.cancel(); au.pause();
+  au.onended = null; au.onerror = null; au.ontimeupdate = null;
+  msReset(); abClear(); TTS.key = null; clearTimeout(TTS.sleepT);
+  try { au.removeAttribute('src'); au.load(); } catch {}
   Object.assign(TTS, { show: false, playing: false, sleep: 0 }); wake(false);
-  document.querySelector('#rtext .tts')?.classList.remove('tts'); drawCtl();
+  document.querySelector('#rtext .tts')?.classList.remove('tts'); drawCtl(); setPlayState('none');
 }
 function audioPanel(el) {
-  const G = { svetlana: 'жен.', dmitry: 'муж.' }, N = { svetlana: 'Светлана', dmitry: 'Дмитрий' };
   el.innerHTML =
-    (sileroOK ? `<h4>Голос</h4><div class="seg wrap">${SP.map(x => `<button data-sv="${x}" class="${(set.sv || SP[0]) === x ? 'on' : ''}">${N[x] || x} (${G[x] || ''})</button>`).join('')}</div>`
+    (sileroOK ? `<h4>Голос</h4><div class="seg wrap">${SP.map(x => `<button data-sv="${x}" class="${curVoice() === x ? 'on' : ''}">${vLabel(x)}</button>`).join('')}</div>`
       : `<div class="meta" style="padding:0 0 12px">Нейроголос подключается, это займёт около минуты.</div>`) +
     `<h4>Скорость речи</h4><div class="seg">${[.8, 1, 1.25, 1.5, 2].map(r => `<button data-r="${r}" class="${set.rate === r ? 'on' : ''}">${r}×</button>`).join('')}</div>
     <h4 style="margin-top:16px">Таймер сна</h4><div class="seg">${[[0, 'Выкл'], [15, '15 мин'], [30, '30 мин'], [60, '60 мин']].map(([m, n]) => `<button data-sl="${m}" class="${TTS.sleep === m ? 'on' : ''}">${n}</button>`).join('')}</div>`;

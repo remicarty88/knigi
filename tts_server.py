@@ -1,108 +1,73 @@
-"""TTS-сервис: голоса Microsoft Edge (edge-tts, нужен интернет) + запасной Silero (локально, если установлен).
+"""TTS-сервис: локальный Piper (быстрый, офлайн). Единственный голос — Орфей.
 Запуск: python tts_server.py   (или через Node: автоматически вместе с server.js)
 """
-import array, asyncio, io, json, os, re, threading, wave
-from concurrent.futures import ThreadPoolExecutor
+import json, os, threading, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import edge_tts  # pip install edge-tts
-
 PORT = int(os.environ.get('TTS_PORT', '5005'))
-EDGE = {'svetlana': 'ru-RU-SvetlanaNeural', 'dmitry': 'ru-RU-DmitryNeural'}
-EDGE_RATE = os.environ.get('EDGE_RATE', '+0%')   # например '-5%' для более спокойного темпа
-EDGE_CHUNK = int(os.environ.get('EDGE_CHUNK', '350'))  # длинные абзацы режем на куски и озвучиваем параллельно
-SILERO = ['xenia', 'kseniya', 'baya', 'aidar', 'eugene']
 
-# ---------- Silero (необязательно) ----------
-model = None
-SR = int(os.environ.get('SILERO_SR', '24000'))
-if os.environ.get('USE_SILERO', '0') != '0':   # по умолчанию выключен: тяжёлый и нужен только edge-tts
+# ---------- Piper (локальный, быстрый, офлайн; модель качается при первом обращении) ----------
+# Отключить: USE_PIPER=0. Зеркало Hugging Face: PIPER_MIRROR=https://hf-mirror.com
+PIPER = {'ruslan': 'ru_RU-ruslan-medium'}
+PIPER_DIR = os.environ.get('PIPER_DIR', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'piper_voices'))
+PIPER_MIRROR = os.environ.get('PIPER_MIRROR', 'https://huggingface.co').rstrip('/')
+PIPER_BITRATE = int(os.environ.get('PIPER_BITRATE', '160'))  # 22.05 кГц — это MPEG-2, максимум 160 kbps
+piper_ok = False
+PiperVoice = lameenc = None
+_piper_cache = {}
+if os.environ.get('USE_PIPER', '1') != '0':
     try:
-        import torch
-        from silero import silero_tts
-        torch.set_num_threads(int(os.environ.get('TORCH_THREADS', '4')))
-        MODEL_ID = os.environ.get('SILERO_MODEL', 'v5_5_ru')
-        try:
-            model, _ = silero_tts(language='ru', speaker=MODEL_ID)
-        except Exception:
-            model, _ = silero_tts(language='ru', speaker='v5_ru')
-        model.to(torch.device('cpu'))
-        print('Silero загружен', flush=True)
+        from piper import PiperVoice
+        import lameenc
+        piper_ok = True
+        print('Piper доступен', flush=True)
     except Exception as e:
-        print('Silero недоступен (ок, работаем на edge-tts):', e, flush=True)
-SPEAKERS = list(EDGE) + (SILERO if model else [])
+        print('Piper недоступен:', e, flush=True)
+
+SPEAKERS = list(PIPER) if piper_ok else []
+MODEL = 'piper' if piper_ok else 'off'
 lock = threading.Lock()
-pool = ThreadPoolExecutor(max_workers=8)
 
 
-def split(text, limit=500):
-    parts = re.findall(r'[^.!?…]+[.!?…]+["»”)]*\s*|[^.!?…]+$', text) or [text]
-    out, cur = [], ''
-    for p in parts:
-        if len(cur) + len(p) <= limit:
-            cur += p; continue
-        if cur: out.append(cur)
-        while len(p) > limit:
-            j = p.rfind(' ', 0, limit); j = j if j > 50 else limit
-            out.append(p[:j]); p = p[j:]
-        cur = p
-    if cur.strip(): out.append(cur)
-    return [c.strip() for c in out if re.search(r'\w', c)]
+def piper_ensure(name):
+    """Путь к .onnx-модели; при отсутствии скачивает модель и конфиг с Hugging Face."""
+    mid = PIPER[name]                                  # ru_RU-ruslan-medium
+    lang, voice, quality = mid.split('-')              # ru_RU, ruslan, medium
+    fam = lang.split('_')[0]                           # ru
+    onnx = os.path.join(PIPER_DIR, mid + '.onnx')
+    if os.path.exists(onnx) and os.path.exists(onnx + '.json'):
+        return onnx
+    os.makedirs(PIPER_DIR, exist_ok=True)
+    base = f'{PIPER_MIRROR}/rhasspy/piper-voices/resolve/main/{fam}/{lang}/{voice}/{quality}/{mid}'
+    for url, dst in ((base + '.onnx', onnx), (base + '.onnx.json', onnx + '.json')):
+        print('Скачиваю голос Piper:', os.path.basename(dst), flush=True)
+        tmp = dst + '.part'
+        urllib.request.urlretrieve(url + '?download=true', tmp)
+        os.replace(tmp, dst)
+    return onnx
 
 
-def synth_silero(text, speaker):
-    import torch
-    gap = torch.zeros(int(SR * 0.25)); pieces = []
+def synth_piper(text, speaker):
     with lock:
-        for c in split(text):
-            try:
-                a = model.apply_tts(text=c, speaker=speaker, sample_rate=SR)
-            except Exception:
-                clean = re.sub(r'[^а-яёА-ЯЁa-zA-Z0-9 ,.!?:;\-]', ' ', c)
-                try: a = model.apply_tts(text=clean, speaker=speaker, sample_rate=SR)
-                except Exception as e: print('Пропущен кусок:', e, flush=True); continue
-            pieces += [a.flatten(), gap]
-    if not pieces: pieces = [torch.zeros(int(SR * 0.4))]
-    pcm = torch.cat(pieces).clamp(-1, 1).mul(32767).short()
-    buf = io.BytesIO()
-    with wave.open(buf, 'wb') as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
-        w.writeframes(array.array('h', pcm.tolist()).tobytes())
-    return buf.getvalue(), 'audio/wav'
-
-
-async def _edge(text, voice):
-    data = bytearray()
-    async for ch in edge_tts.Communicate(text, voice, rate=EDGE_RATE).stream():
-        if ch['type'] == 'audio':
-            data += ch['data']
-    return bytes(data)
-
-
-def _edge_one(text, voice):
-    last = None
-    for attempt in range(3):
-        try:
-            data = asyncio.run(_edge(text, voice))
-            if data: return data
-        except Exception as e:
-            last = e
-    raise RuntimeError(f'edge-tts: {last}')
-
-
-def synth_edge(text, speaker):
-    text = re.sub(r'\s+', ' ', text).strip()
-    voice = EDGE[speaker]
-    chunks = split(text, EDGE_CHUNK) if len(text) > EDGE_CHUNK else [text]
-    if len(chunks) == 1:
-        return _edge_one(chunks[0], voice), 'audio/mpeg'
-    # куски озвучиваются одновременно, mp3 склеивается подряд — длинный абзац готов за время самого долгого куска
-    return b''.join(pool.map(lambda c: _edge_one(c, voice), chunks)), 'audio/mpeg'
+        v = _piper_cache.get(speaker)
+        if v is None:
+            v = PiperVoice.load(piper_ensure(speaker))  # ~1 с на первый вызов
+            _piper_cache[speaker] = v
+    sr = v.config.sample_rate
+    enc = lameenc.Encoder()
+    enc.set_bit_rate(PIPER_BITRATE); enc.set_in_sample_rate(sr); enc.set_channels(1); enc.set_quality(0)
+    out = bytearray()
+    for chunk in v.synthesize(text):
+        out += enc.encode(chunk.audio_int16_bytes)
+    out += enc.encode(bytes(int(sr * 0.3) * 2))         # небольшая пауза между абзацами
+    out += enc.flush()
+    return bytes(out), 'audio/mpeg'
 
 
 def synth(text, speaker):
-    if speaker in EDGE: return synth_edge(text, speaker)
-    return synth_silero(text, speaker)
+    if not (piper_ok and speaker in PIPER):
+        raise RuntimeError('Голос недоступен')
+    return synth_piper(text, speaker)
 
 
 class H(BaseHTTPRequestHandler):
@@ -114,7 +79,7 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith('/health'):
-            return self._send(200, json.dumps({'ok': True, 'model': 'edge-tts', 'speakers': SPEAKERS}).encode(), 'application/json')
+            return self._send(200, json.dumps({'ok': piper_ok, 'model': MODEL, 'speakers': SPEAKERS}).encode(), 'application/json')
         self._send(404, b'{}', 'application/json')
 
     def do_POST(self):
@@ -122,8 +87,8 @@ class H(BaseHTTPRequestHandler):
             return self._send(404, b'{}', 'application/json')
         try:
             d = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))) or b'{}')
-            sp = d.get('speaker', 'svetlana')
-            if sp not in SPEAKERS: sp = 'svetlana'
+            sp = d.get('speaker', 'ruslan')
+            if sp not in SPEAKERS: sp = 'ruslan'
             body, ctype = synth(str(d.get('text', ''))[:6000], sp)
             self._send(200, body, ctype)
         except Exception as e:
@@ -133,5 +98,5 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
-    print('TTS готов, голоса:', ', '.join(SPEAKERS), flush=True)
+    print('TTS готов, модель:', MODEL, '| голоса:', ', '.join(SPEAKERS) or '—', flush=True)
     ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
