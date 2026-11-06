@@ -168,7 +168,10 @@ async function ttsWav(id, i, sp) {
     const p = (await readBook(id)).paras[i];
     if (!p) throw new Error('Нет такого абзаца');
     const r = await fetch(TTS_URL + '/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: p.t, speaker: sp }) });
-    if (!r.ok) throw new Error('TTS: ' + r.status);
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || 'TTS: ' + r.status);
+    }
     return Buffer.from(await r.arrayBuffer());
   })();
   inflight.set(key, job);
@@ -362,7 +365,7 @@ http.createServer(async (req, res) => {
     if (url.pathname === '/api/tts/status') {
       try {
         const d = await (await fetch(TTS_URL + '/health', { signal: AbortSignal.timeout(1500) })).json();
-        return json(res, { ok: true, speakers: d.speakers || SPEAKERS, model: d.model });
+        return json(res, { ok: !!d.ok, loading: !!d.loading, speakers: d.speakers || [], model: d.model });
       } catch { return json(res, { ok: false }); }
     }
     if (url.pathname === '/api/tts') {

@@ -726,7 +726,7 @@ function panel(kind, tab = 'toc') {
 }
 /* ---------- озвучка (бесплатный синтез речи браузера) ---------- */
 const tts = window.speechSynthesis;
-const TTS = { show: false, playing: false, i: 0, k: 0, gen: 0, sleep: 0, sleepT: 0, sp: 'svetlana' };
+const TTS = { show: false, playing: false, i: 0, k: 0, gen: 0, sleep: 0, sleepT: 0, sp: 'svetlana', lastErr: '' };
 let wl = null;
 async function wake(on) {
   try { if (on && navigator.wakeLock && !wl) { wl = await navigator.wakeLock.request('screen'); wl.onrelease = () => wl = null; }
@@ -843,8 +843,14 @@ const abKey = (i, sp) => `${R.id}:${i}:${sp}`;
 function abGet(i, sp) {
   const k = abKey(i, sp); if (AB.has(k)) return AB.get(k).p;
   const e = {};
-  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
-    .then(b => (e.buf = b)).catch(() => { AB.delete(k); return null; });
+  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(async r => {
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || `Ошибка сервера ${r.status}`);
+    }
+    return r.arrayBuffer();
+  }).then(b => { TTS.lastErr = ''; return (e.buf = b); })
+    .catch(err => { TTS.lastErr = err.message || String(err); AB.delete(k); return null; });
   AB.set(k, e); return e.p;
 }
 function abAhead(i, sp) {
@@ -894,10 +900,14 @@ function msUpdateEnd() {
 function queuePara(n) {
   const gen = TTS.gen, e = { i: n, buf: null };
   MQ.push(e);
+  let attempts = 0;
   const get = () => abGet(n, TTS.sp).then(b => {
-    if (gen !== TTS.gen) return;
+    if (gen !== TTS.gen || !TTS.playing) return;
     if (b) { e.buf = b; msPump(); return; }
-    setTimeout(() => { if (gen === TTS.gen && TTS.show) get(); }, 1500); // сеть подвела — пробуем снова
+    if (n < TTS.i) return;
+    if (n > TTS.i || ++attempts <= 3) { setTimeout(get, 1500); return; }
+    TTS.key = null; pauseTTS();
+    toast(TTS.lastErr ? `Ошибка нейроголоса: ${TTS.lastErr}` : 'Нейроголос не ответил');
   });
   get();
 }
@@ -955,7 +965,8 @@ function playChunks(gen, i, sp) {
   TTS.sp = sp; abClear();
   const fail = () => {
     if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; }
-    TTS.err = 0; TTS.key = null; pauseTTS(); toast('Нейроголос не ответил — нажмите ▶, чтобы продолжить');
+    TTS.err = 0; TTS.key = null; pauseTTS();
+    toast(TTS.lastErr ? `Ошибка нейроголоса: ${TTS.lastErr}` : 'Нейроголос не ответил — нажмите ▶, чтобы продолжить');
   };
   const start = (i0, buf, url) => {
     if (gen !== TTS.gen || TTS.i !== i0) { if (url) URL.revokeObjectURL(url); return; }
