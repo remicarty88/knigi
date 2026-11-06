@@ -4,6 +4,7 @@
 
 [phases.setup]
 nixPkgs = ["nodejs_22", "python312"]
+nixLibs = ["stdenv.cc.cc.lib"]
 
 [phases.install]
 cmds = [
