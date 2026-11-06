@@ -142,7 +142,7 @@ async function startTTS() {
   const env = { PYTHONPATH: [PYLIBS, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter), PYTHONUNBUFFERED: '1' };
   if (!(await sh(py, ['-c', 'import piper'], env))) {
     console.log('piper-tts не найден, доустанавливаю в ./pylibs …');
-    await sh(py, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--target', PYLIBS, 'piper-tts', 'lameenc'], env);
+    await sh(py, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--upgrade', '--target', PYLIBS, 'numpy<2', 'piper-tts', 'lameenc'], env);
   }
   let fails = 0;
   const run = () => {
