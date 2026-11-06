@@ -1,0 +1,8 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.trae-html-share-packages/
+cache/
+piper_voices/
