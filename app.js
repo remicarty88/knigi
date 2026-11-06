@@ -21,7 +21,12 @@ async function api(p) {
   if (!r.ok) throw new Error(d.error || 'Ошибка сервера ' + r.status);
   return d;
 }
-const authorOf = b => (b.author || []).map(a => a.name).join(', ');
+const authorOf = b => {
+  const authors = b?.author;
+  if (typeof authors === 'string') return authors;
+  if (!Array.isArray(authors)) return '';
+  return authors.map(a => typeof a === 'string' ? a : a?.name || '').filter(Boolean).join(', ');
+};
 const descParts = (h = '') => h.split(/<br\s*\/?>/i).map(p => new DOMParser().parseFromString(p, 'text/html').body.textContent.trim()).filter(Boolean);
 
 /* ---------- SVG-иконки (в стиле Lucide, inline — работают офлайн) ---------- */
@@ -231,7 +236,13 @@ let SC = store.get('sc', {});
 const scKey = () => (S.authorId ? 'a' + S.authorId : S.mode) + '|' + S.q + '|' + S.page;
 function scPut(k, v) { SC[k] = v; const ks = Object.keys(SC); if (ks.length > 40) ks.slice(0, 20).forEach(x => delete SC[x]); store.set('sc', SC); }
 // мгновенные совпадения по книгам, которые уже есть на устройстве (без обращения к библиотеке)
-const localMatches = q => { const s = q.toLowerCase(); return Object.values(BOOKS).filter(b => (b.title || '').toLowerCase().includes(s) || authorOf(b).toLowerCase().includes(s)).slice(0, 30); };
+const localMatches = q => {
+  const s = String(q ?? '').toLowerCase();
+  return Object.values(BOOKS).filter(b => {
+    const title = typeof b?.title === 'string' ? b.title : String(b?.title?.name ?? b?.title?.['#text'] ?? '');
+    return title.toLowerCase().includes(s) || authorOf(b).toLowerCase().includes(s);
+  }).slice(0, 30);
+};
 async function doSearch(restore) {
   const res = $('#res'); if (!res) return;
   const tok = ++searchTok;
