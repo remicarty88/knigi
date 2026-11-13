@@ -22,8 +22,8 @@
   if (tg) {
     const dark = tg.colorScheme !== 'light';
     document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#121214' : '#ffffff');
-    try { tg.setHeaderColor(dark ? '#121214' : '#ffffff'); tg.setBackgroundColor(dark ? '#121214' : '#ffffff'); } catch (e) {}
+    document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#07090f' : '#f5f3ee');
+    try { tg.setHeaderColor(dark ? '#07090f' : '#f5f3ee'); tg.setBackgroundColor(dark ? '#07090f' : '#f5f3ee'); } catch (e) {}
     tg.ready(); tg.expand();
     // запрет сворачивания приложения свайпом вниз (Bot API 7.7+)
     try { tg.disableVerticalSwipes(); } catch (e) {}

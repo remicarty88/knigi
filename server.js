@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import FlibustaAPI from 'flibusta';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+const CACHE = path.join(ROOT, 'cache');
+fs.mkdirSync(CACHE, { recursive: true });
 // .env читаем сами: флаг --env-file-if-exists есть только в Node 22.9+
 try {
   for (const line of fs.readFileSync(path.join(ROOT, '.env'), 'utf8').split('\n')) {
@@ -60,6 +61,8 @@ const json = (res, data, code = 200) => {
 };
 
 const cache = new Map();
+let cacheBytes = 0;
+const BOOK_CACHE_BYTES = Math.max(8, +process.env.BOOK_CACHE_MB || 64) * 1048576;
 const ENT = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", mdash: '—', ndash: '–',
   laquo: '«', raquo: '»', hellip: '…' };
 const decode = t => t.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, e) => {
@@ -103,7 +106,8 @@ function fetchPage(id) {
   return job.finally(() => pageJobs.delete(id));
 }
 async function readBook(id) {
-  if (cache.has(id)) return cache.get(id);
+  const hit = cache.get(id);
+  if (hit) { cache.delete(id); cache.set(id, hit); return hit.out; }
   const paras = await fetchPage(id);
   // чистим служебный мусор сайта: упоминания Флибусты, «скачать» и т.п. (только короткие строки, чтобы не задеть сам текст)
   const JUNK = /флибуст|flibusta|скачать|скачива|читать онлайн|электронная библиотека|полная версия книги|все книги автора|оценить книгу|\bfb2\b|\bepub\b/i;
@@ -115,79 +119,19 @@ async function readBook(id) {
     .filter(p => p.t && !NAV.test(p.t) && !(p.t.length < 160 && JUNK.test(p.t)));
   if (clean.length < 3) throw new Error('Не удалось получить текст книги');
   const out = { paras: clean };
-  if (cache.size > 20) cache.delete(cache.keys().next().value);
-  cache.set(id, out);
-  return out;
-}
-
-// ---------- озвучка Silero (Python-сервис) ----------
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CACHE = path.join(HERE, 'cache');
-fs.mkdirSync(CACHE, { recursive: true });
-const TTS_URL = `http://127.0.0.1:${process.env.TTS_PORT || 5005}`;
-const SPEAKERS = ['ruslan'];
-const mimeOf = () => 'audio/mpeg'; // единственный голос — Piper (mp3)
-// Сервис озвучки (Python + Piper) запускается сам, даже если стартовая команда на хостинге просто «node server.js».
-// Отключить: флаг --no-tts или NO_TTS=1. Если piper-tts не поставился при сборке, он доустанавливается в ./pylibs.
-const PYLIBS = path.join(HERE, 'pylibs');
-const sh = (cmd, args, env = {}) => new Promise(res => {
-  const p = spawn(cmd, args, { cwd: HERE, env: { ...process.env, ...env }, stdio: 'ignore' });
-  p.on('error', () => res(false)); p.on('exit', c => res(c === 0));
-});
-async function startTTS() {
-  const cands = [process.env.PYTHON, '/opt/venv/bin/python', 'python3', 'python'].filter(Boolean);
-  let py = null;
-  for (const c of cands) if (await sh(c, ['--version'])) { py = c; break; }
-  if (!py) return console.log('Сервис озвучки не запустился: Python не найден. Читалка будет использовать системный голос браузера.');
-  const env = { PYTHONPATH: [PYLIBS, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter), PYTHONUNBUFFERED: '1' };
-  if (!(await sh(py, ['-c', 'import piper'], env))) {
-    console.log('piper-tts не найден, доустанавливаю в ./pylibs …');
-    await sh(py, ['-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', '--upgrade', '--target', PYLIBS, 'numpy<2', 'piper-tts', 'lameenc'], env);
-  }
-  let fails = 0;
-  const run = () => {
-    const t0 = Date.now();
-    const p = spawn(py, ['tts_server.py'], { stdio: 'inherit', cwd: HERE, env: { ...process.env, ...env } });
-    p.on('error', e => console.log(`Сервис озвучки не запустился (${e.message}). Читалка будет использовать системный голос браузера.`));
-    p.on('exit', c => {
-      console.log('tts_server завершился, код', c);
-      if (Date.now() - t0 > 60000) fails = 0;
-      if (++fails <= 5) setTimeout(run, 3000 * fails);
-    });
-    process.on('exit', () => p.kill());
-  };
-  run();
-}
-if (!process.argv.includes('--no-tts') && process.env.NO_TTS !== '1') startTTS();
-// Голос синтезируется «в прямом эфире»: mp3 нигде не сохраняется на диск, только дедуп одновременных запросов в памяти.
-const inflight = new Map();
-async function ttsWav(id, i, sp) {
-  const key = `${id}:${i}:${sp}`;
-  if (inflight.has(key)) return inflight.get(key);
-  const job = (async () => {
-    const p = (await readBook(id)).paras[i];
-    if (!p) throw new Error('Нет такого абзаца');
-    const r = await fetch(TTS_URL + '/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: p.t, speaker: sp }) });
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || 'TTS: ' + r.status);
+  const bytes = clean.reduce((n, p) => n + p.t.length * 2 + 64, 0);
+  if (bytes <= BOOK_CACHE_BYTES) {
+    const old = cache.get(id);
+    if (old) { cacheBytes -= old.bytes; cache.delete(id); }
+    while (cacheBytes + bytes > BOOK_CACHE_BYTES) {
+      const oldest = cache.keys().next().value;
+      cacheBytes -= cache.get(oldest).bytes;
+      cache.delete(oldest);
     }
-    return Buffer.from(await r.arrayBuffer());
-  })();
-  inflight.set(key, job);
-  try { return await job; } finally { inflight.delete(key); }
-}
-// Range-ответы нужны, чтобы <audio> работал в Safari/iOS
-function sendAudio(req, res, buf, mime) {
-  const total = buf.length, m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
-  const h = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400' };
-  if (m) {
-    const s = m[1] ? +m[1] : 0, e = Math.min(m[2] ? +m[2] : total - 1, total - 1);
-    res.writeHead(206, { ...h, 'Content-Range': `bytes ${s}-${e}/${total}`, 'Content-Length': e - s + 1 });
-    return res.end(buf.subarray(s, e + 1));
+    cache.set(id, { out, bytes });
+    cacheBytes += bytes;
   }
-  res.writeHead(200, { ...h, 'Content-Length': total });
-  res.end(buf);
+  return out;
 }
 
 // ---------- быстрые обложки: лимит параллельных запросов, дисковый и память-кэш ----------
@@ -198,7 +142,22 @@ const run = fn => new Promise((res, rej) => {
 });
 const IMG_DIR = path.join(ROOT, 'cache', 'img'); fs.mkdirSync(IMG_DIR, { recursive: true });
 const imgMem = new Map(), imgJobs = new Map(), imgBad = new Map();
-const remember = (k, v) => { imgMem.set(k, v); if (imgMem.size > 300) imgMem.delete(imgMem.keys().next().value); return v; };
+const IMG_MEM_BYTES = 32 * 1048576;
+let imgMemBytes = 0;
+function remember(k, v) {
+  const old = imgMem.get(k);
+  if (old) { imgMemBytes -= old.buf.length; imgMem.delete(k); }
+  if (v.buf.length <= IMG_MEM_BYTES) {
+    while (imgMemBytes + v.buf.length > IMG_MEM_BYTES) {
+      const oldest = imgMem.keys().next().value;
+      imgMemBytes -= imgMem.get(oldest).buf.length;
+      imgMem.delete(oldest);
+    }
+    imgMem.set(k, v);
+    imgMemBytes += v.buf.length;
+  }
+  return v;
+}
 async function getImg(p) {
   const key = crypto.createHash('sha1').update(p).digest('hex');
   if (imgMem.has(key)) { const v = imgMem.get(key); imgMem.delete(key); imgMem.set(key, v); return v; }
@@ -252,10 +211,9 @@ async function cached(key, fn, ttl = 600000) {
   if (c) { if (Date.now() - c.t >= ttl) loadApi(key, fn).catch(() => {}); return c.d; }
   return loadApi(key, fn);
 }
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const booksFn = (q, page, limit) => () => viaMirrors(a => a.getBooksByNameFromOpdsPaginated(q, page, limit));
 
-// ---------- прогрев: полки главной и первые книги подготавливаются заранее и обновляются раз в 30 минут ----------
+// ---------- прогрев: только результаты поиска и обложки, без скачивания текстов книг ----------
 // должен совпадать со списком полок в app.js (SHELVES); можно переопределить переменной WARM_QUERIES (через запятую)
 const WARM_Q = (process.env.WARM_QUERIES || 'Шерлок Холмс,Дюна,Гарри Поттер,Война и мир,1984,Мастер и Маргарита').split(',').map(x => x.trim()).filter(Boolean);
 let warming = false;
@@ -265,25 +223,20 @@ async function warmAll() {
     try {
       const d = norm(await loadApi(`/api/books?q=${encodeURIComponent(q)}&limit=10`, booksFn(q, 0, 10)));
       warm(d);
-      for (const b of (d.items || []).slice(0, 2)) { // тексты первых двух книг полки — чтобы открывались мгновенно
-        const id = String(b.id ?? '').replace(/\D/g, '');
-        if (id) { await fetchPage(id).catch(() => {}); await sleep(1500); }
-      }
     } catch (e) { console.log('прогрев:', q, '—', String(e.message || e).slice(0, 100)); }
-    await sleep(1000);
   }
   warming = false; console.log('прогрев завершён');
 }
 setTimeout(warmAll, 3000); setInterval(warmAll, 30 * 60 * 1000);
 
-// ---------- лимит размера всей папки cache (CACHE_MB, по умолчанию 2000): самые старые файлы удаляются ----------
+// ---------- лимит размера всей папки cache (CACHE_MB, по умолчанию 512): самые старые файлы удаляются ----------
 function walk(dir, out = []) {
   for (const n of fs.readdirSync(dir)) { const p = path.join(dir, n), st = fs.statSync(p); st.isDirectory() ? walk(p, out) : out.push({ p, size: st.size, t: st.mtimeMs }); }
   return out;
 }
 function trimCache(urgent) {
   try {
-    let max = (+process.env.CACHE_MB || 2000) * 1048576;
+    let max = (+process.env.CACHE_MB || 512) * 1048576;
     const files = walk(CACHE); let total = files.reduce((a, f) => a + f.size, 0);
     let free = Infinity; try { const s = fs.statfsSync(CACHE); free = s.bavail * s.bsize; } catch {}
     if (urgent || free < 150 * 1048576) max = Math.min(max, total * 0.7); // место на исходе — освобождаем заметно больше
@@ -361,18 +314,6 @@ http.createServer(async (req, res) => {
       const id = (q.get('id') || '').replace(/\D/g, '');
       if (!id) return json(res, { error: 'bad id' }, 400);
       return json(res, await readBook(id));
-    }
-    if (url.pathname === '/api/tts/status') {
-      try {
-        const d = await (await fetch(TTS_URL + '/health', { signal: AbortSignal.timeout(1500) })).json();
-        return json(res, { ok: !!d.ok, loading: !!d.loading, speakers: d.speakers || [], model: d.model });
-      } catch { return json(res, { ok: false }); }
-    }
-    if (url.pathname === '/api/tts') {
-      const id = (q.get('id') || '').replace(/\D/g, ''), i = parseInt(q.get('i'), 10), sp = q.get('sp') || 'ruslan';
-      if (!id || !(i >= 0) || !SPEAKERS.includes(sp)) return json(res, { error: 'bad params' }, 400);
-      const buf = await ttsWav(id, i, sp);
-      return sendAudio(req, res, buf, mimeOf(sp));
     }
     // хеш пароля (в базу пароль в открытом виде не попадает)
     if (url.pathname === '/api/hash' && req.method === 'POST') {

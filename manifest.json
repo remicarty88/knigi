@@ -3,7 +3,7 @@
   "short_name": "Книги",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#14141f",
-  "theme_color": "#1b1b2f",
+  "background_color": "#07090f",
+  "theme_color": "#07090f",
   "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }

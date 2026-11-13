@@ -5,7 +5,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} if (['shelf', 'prog', 'bm', 'set', 'books', 'st', 'sd', 'bs', 'qt'].includes(k)) queueSync(); }
 };
 let BOOKS = store.get('books', {}), shelf = store.get('shelf', []), prog = store.get('prog', {}), bm = store.get('bm', {}), sd = store.get('sd', {}), bs = store.get('bs', {}), qt = store.get('qt', {});
-let set = { mode: 'page', fs: 19, ff: 'serif', th: 'light', lh: 1.6, rate: 1, ...store.get('set', {}) };
+let set = { mode: 'page', fs: 19, ff: 'serif', th: 'light', lh: 1.6, ...store.get('set', {}) };
 let ST = store.get('st', {}); ST.id ||= 'd' + Math.random().toString(36).slice(2, 8); ST.dev ||= {};
 const FONTS = { serif: 'Georgia,"Noto Serif","Times New Roman",serif', sans: 'system-ui,-apple-system,Roboto,sans-serif' };
 const THEME_COLOR = { light: '#ffffff', sepia: '#f4ecd8', gray: '#3b3b3f', dark: '#000000' };
@@ -45,11 +45,6 @@ const IC = {
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   sync: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
-  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
-  headphones: '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>',
-  skipf: '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" x2="19" y1="5" y2="19"/>',
-  skipb: '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>',
-  sliders: '<line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="2" x2="6" y1="14" y2="14"/><line x1="10" x2="14" y1="8" y2="8"/><line x1="18" x2="22" y1="16" y2="16"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>'
 };
 Object.assign(IC, {
@@ -406,10 +401,9 @@ let lastAct = Date.now(), tickN = 0;
 ['pointerdown', 'keydown', 'touchstart', 'scroll', 'wheel'].forEach(e => addEventListener(e, () => lastAct = Date.now(), { passive: true, capture: true }));
 setInterval(() => {
   if (!R || rd.hidden) return;
-  const listening = TTS.playing;
-  if (!listening && (document.hidden || Date.now() - lastAct > 120000)) return; // читаем только пока есть активность
+  if (document.hidden || Date.now() - lastAct > 120000) return;
   const m = myDev(), d = m.days[dayKey()] ||= { r: 0, l: 0 };
-  if (listening) d.l += 5; else d.r += 5;
+  d.r += 5;
   m.bk['b' + R.id] = (m.bk['b' + R.id] || 0) + 5;
   tickN++; if (tickN % 6 === 0) saveST(tickN % 60 === 0);
 }, 5000);
@@ -448,9 +442,6 @@ function exportData() {
 
 /* ---------- профиль ---------- */
 let authMode = 'login', authErr = '';
-const VN = { ruslan: 'Орфей' };
-const VG = { ruslan: 'муж.' };
-const vLabel = v => `${VN[v] || v} (${VG[v] || ''})`;
 const sg = (k, items, cur, cls = '') => `<div class="seg ${cls}">${items.map(([v, t, st]) => `<button data-pa="${k}:${v}" class="${String(cur) === String(v) ? 'on' : ''}"${st ? ` style="${st}"` : ''}>${t}</button>`).join('')}</div>`;
 async function pa(k, v, btn) {
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -459,9 +450,8 @@ async function pa(k, v, btn) {
   else if (k === 'mode') set.mode = v; else if (k === 'th') set.th = v; else if (k === 'ff') set.ff = v;
   else if (k === 'fs') set.fs = clamp(set.fs + (v === '+' ? 1 : -1), 13, 32);
   else if (k === 'lh') set.lh = clamp(+(set.lh + (v === '+' ? .1 : -.1)).toFixed(1), 1.2, 2.2);
-  else if (k === 'sv') set.sv = v; else if (k === 'eng') set.engine = v;
-  else if (k === 'rate') set.rate = +v; else if (k === 'goal') set.goal = +v;
-  else if (k === 'reset') { if (!confirm('Сбросить оформление и настройки читалки?')) return; set = { mode: 'page', fs: 19, ff: 'serif', th: 'light', lh: 1.6, rate: 1, goal: set.goal }; }
+  else if (k === 'goal') set.goal = +v;
+  else if (k === 'reset') { if (!confirm('Сбросить оформление и настройки читалки?')) return; set = { mode: 'page', fs: 19, ff: 'serif', th: 'light', lh: 1.6, goal: set.goal }; }
   else if (k === 'exp') return exportData();
   else if (k === 'imp') return $('#imp').click();
   else if (k === 'am') { authMode = v; authErr = ''; return me(); }
@@ -483,7 +473,7 @@ function me() {
   <div class="mini"><div><b>${fmtDur(todSec)}</b>сегодня</div><div><b>${s.streak}</b>дн. подряд</div><div><b>${fin}</b>прочитано</div></div>
   <div class="card">${goal ? `<div class="gl"><span>${Math.min(Math.round(todSec / 60), 999)} из ${goal} мин</span><span>${todSec >= goal * 60 ? '✓ цель выполнена' : 'осталось ' + fmtDur(goal * 60 - todSec)}</span></div><div class="bar big"><i style="width:${Math.min(100, todSec / (goal * 60) * 100)}%"></i></div>` : '<div class="gl"><span>Цель выключена, включите её в настройках ниже</span></div>'}
     <div class="chart">${wk.map(x => `<div class="col${x.on ? ' on' : ''}"><div class="bw"><i style="height:${Math.max(3, Math.round(x.sec / mx * 100))}%"></i></div><span>${x.d}</span></div>`).join('')}</div>
-    <div class="meta" style="padding:12px 0 0;text-align:center">Всего ${fmtDur(s.tot)}${s.l ? ' · слушал ' + fmtDur(s.l) : ''}</div></div>
+    <div class="meta" style="padding:12px 0 0;text-align:center">Всего ${fmtDur(s.tot)}</div></div>
   <div class="card"><h2 style="margin:0 0 12px">Настройки</h2>
     <h4>Тема приложения</h4>${sg('app', [['auto', 'Авто'], ['light', 'Светлая'], ['dark', 'Тёмная']], set.app || 'auto')}
     <h4>Цвет акцента</h4>${sg('acc', dots, set.acc || 'yellow', 'dots')}
@@ -493,8 +483,6 @@ function me() {
     <h4>Шрифт</h4>${sg('ff', [['serif', 'С засечками', `font-family:${FONTS.serif}`], ['sans', 'Без засечек']], set.ff)}
     <h4>Размер текста</h4>${stp('fs', set.fs)}
     <h4>Межстрочный интервал</h4>${stp('lh', set.lh)}
-    <h4>Озвучка: скорость</h4>${sg('rate', [.8, 1, 1.25, 1.5, 2].map(r => [r, r + '×']), set.rate || 1)}
-    ${sileroOK ? `<h4>Голос озвучки</h4>${sg('sv', SP.map(x => [x, vLabel(x)]), curVoice(), 'wrap')}` : '<div class="meta" style="padding:8px 0">Нейроголос подключается, это займёт около минуты.</div>'}
     <div style="display:grid;gap:10px;margin-top:14px"><button class="btn sec2" data-pa="reset:1">Сбросить настройки</button></div></div>
   <div class="card"><h2 style="margin:0 0 12px">Данные</h2><div style="display:grid;gap:10px">
     <button class="btn sec2" data-pa="exp:1">Сохранить резервную копию</button><button class="btn sec2" data-pa="imp:1">Восстановить из копии</button>
@@ -562,10 +550,10 @@ function setFrac(f) {
   else { const sc = $r('rscroll'); sc.scrollTop = f * (sc.scrollHeight - sc.clientHeight); }
   onPos();
 }
-function turn(d) { const w = $r('rwrap'); w.scrollLeft = Math.max(0, Math.min(w.scrollWidth - R.W, w.scrollLeft + d * R.W)); onPos(); seekSoon(); }
+function turn(d) { const w = $r('rwrap'); w.scrollLeft = Math.max(0, Math.min(w.scrollWidth - R.W, w.scrollLeft + d * R.W)); onPos(); }
 function onPos() {
   const w = $r('rwrap'), sc = $r('rscroll'); if (!R || !w) return;
-  const i = TTS.playing ? TTS.i : cur(), pc = (R.cum[i - 1] || 0) / R.total, min = Math.round(Math.max(0, R.total - (R.cum[i - 1] || 0)) / 1000);
+  const i = cur(), pc = (R.cum[i - 1] || 0) / R.total, min = Math.round(Math.max(0, R.total - (R.cum[i - 1] || 0)) / 1000);
   let f, label = '';
   if (set.mode === 'page') { const pg = Math.round(w.scrollLeft / R.W); f = R.pages > 1 ? pg / (R.pages - 1) : 0; label = `стр. ${pg + 1} из ${R.pages}`; }
   else { const m = sc.scrollHeight - sc.clientHeight; f = m > 0 ? sc.scrollTop / m : 0; }
@@ -611,10 +599,10 @@ async function openReader(id) {
     let acc = 0; R.cum = d.paras.map(p => acc += p.t.length); R.total = acc || 1;
     const html = d.paras.map((p, i) => p.h ? (R.heads.push({ i, t: p.t }), `<h3>${esc(p.t)}</h3>`) : `<p>${esc(p.t)}</p>`).join('');
     rd.classList.add('hide'); // книга открывается на весь экран: панели скрыты, тап по центру их показывает
-    rd.innerHTML = `<div class="rbar t"><button id="rx">${ic('left', 26)}</button><div class="tt">${esc(b.title)}</div><button id="rau">${ic('headphones', 22)}</button><button id="rmk">${ic('mark', 22)}</button><button id="rnav">${ic('menu', 22)}</button><button id="rset">${ic('type', 22)}</button></div>
+    rd.innerHTML = `<div class="rbar t"><button id="rx">${ic('left', 26)}</button><div class="tt">${esc(b.title)}</div><button id="rmk">${ic('mark', 22)}</button><button id="rnav">${ic('menu', 22)}</button><button id="rset">${ic('type', 22)}</button></div>
       <div id="rscroll"><div id="rwrap"><div id="rtext">${html}</div></div></div>
       <div id="rmini"></div>
-      <div class="rbar b"><input type="range" id="rrange" min="0" max="1000" value="0"><span id="rpct"></span><div id="rctl" hidden></div><div id="rst"></div></div>`;
+      <div class="rbar b"><input type="range" id="rrange" min="0" max="1000" value="0"><span id="rpct"></span></div>`;
     R.els = [...$r('rtext').children]; layout(); markQuotes();
     if (!['read', 'done'].includes(statusOf(id))) setStatus(id, 'read'); // открыли книгу — значит «Читаю»
     if (!store.get('hintQ', 0)) { store.set('hintQ', 1); setTimeout(() => { if (R && !rd.hidden) toast('Удерживайте абзац — сохранить цитату'); }, 1600); }
@@ -631,7 +619,7 @@ async function openReader(id) {
     sc.addEventListener('pointermove', e => { if (Math.abs(e.clientX - lpX) > 10 || Math.abs(e.clientY - lpY) > 10) clearTimeout(lpT); });
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => sc.addEventListener(t, () => clearTimeout(lpT)));
     sc.addEventListener('contextmenu', e => { if (e.target.closest('#rtext')) e.preventDefault(); });
-    sc.onscroll = () => { if (set.mode !== 'scroll') return; onPos(); if (TTS.show && Date.now() > (R.lock || 0)) seekSoon(); };
+    sc.onscroll = () => { if (set.mode === 'scroll') onPos(); };
     sc.ontouchstart = e => { tx = e.touches[0].clientX; ty = e.touches[0].clientY; };
     sc.ontouchend = e => { const dx = e.changedTouches[0].clientX - tx, dy = e.changedTouches[0].clientY - ty;
       if (set.mode === 'page' && Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) turn(dx < 0 ? 1 : -1); };
@@ -641,13 +629,7 @@ async function openReader(id) {
       if (set.mode === 'page') { const x = e.clientX / innerWidth; if (x < .3) return turn(-1); if (x > .7) return turn(1); }
       rd.classList.toggle('hide');
     };
-    $r('rrange').oninput = e => setFrac(e.target.value / 1000); $r('rrange').onchange = () => seekSoon();
-    $r('rau').onclick = () => TTS.show ? panel('audio') : speakFrom(cur());
-    $r('rctl').onclick = e => { const c = e.target.closest('button')?.dataset.c; if (!c) return;
-      if (c === 'p') TTS.playing ? pauseTTS() : speakFrom(TTS.i, TTS.k);
-      if (c === 'f') speakFrom(TTS.i + 1); if (c === 'b') speakFrom(Math.max(0, TTS.i - 1));
-      if (c === 's') { const r = [.8, 1, 1.25, 1.5, 2]; set.rate = r[(r.indexOf(set.rate) + 1) % r.length]; store.set('set', set); applyRate(); }
-      if (c === 'o') panel('audio'); if (c === 'x') stopTTS(); };
+    $r('rrange').oninput = e => setFrac(e.target.value / 1000);
     $r('rx').onclick = () => goBack(); $r('rmk').onclick = toggleMark;
     $r('rnav').onclick = () => panel('nav'); $r('rset').onclick = () => panel('set');
     onPos();
@@ -680,7 +662,6 @@ function quotePanel(el, i) {
 function panel(kind, tab = 'toc') {
   closePanel();
   const el = document.createElement('div'); el.className = 'panel';
-  if (kind === 'audio') return audioPanel(el);
   if (kind === 'quote') return quotePanel(el, tab);
   if (kind === 'nav') {
     const tabs = [['toc', 'Содержание'], ['marks', 'Закладки'], ['quotes', 'Цитаты'], ['find', 'Поиск']];
@@ -695,7 +676,7 @@ function panel(kind, tab = 'toc') {
     el.onclick = e => {
       const d = e.target.closest('button')?.dataset || {};
       if (d.n) return panel('nav', d.n);
-      if (d.i != null) { closePanel(); goPara(+d.i); seekSoon(+d.i); }
+      if (d.i != null) { closePanel(); goPara(+d.i); }
       if (d.del) { bm[R.id][d.del] = { d: 1, ts: Date.now() }; store.set('bm', bm); saveBooks(); panel('nav', 'marks'); onPos(); }
       if (d.qdel) { qt[R.id][d.qdel] = { d: 1, ts: Date.now() }; store.set('qt', qt); saveBooks(); markQuotes(); panel('nav', 'quotes'); }
     };
@@ -724,310 +705,10 @@ function panel(kind, tab = 'toc') {
   };
   rd.appendChild(el);
 }
-/* ---------- озвучка (бесплатный синтез речи браузера) ---------- */
-const tts = window.speechSynthesis;
-const TTS = { show: false, playing: false, i: 0, k: 0, gen: 0, sleep: 0, sleepT: 0, sp: 'svetlana', lastErr: '' };
-let wl = null;
-async function wake(on) {
-  try { if (on && navigator.wakeLock && !wl) { wl = await navigator.wakeLock.request('screen'); wl.onrelease = () => wl = null; }
-        else if (!on && wl) { await wl.release(); wl = null; } } catch {}
-}
-function chunks(t) {
-  const out = [];
-  for (const part of (t.match(/[^.!?…]+[.!?…]+["»)”]*\s*|[^.!?…]+$/g) || [t])) {
-    let x = part.trim();
-    while (x.length > 220) { let j = x.lastIndexOf(' ', 200); if (j < 50) j = 200; out.push(x.slice(0, j)); x = x.slice(j).trim(); }
-    if (x) out.push(x);
-  }
-  return out;
-}
-/* перемотка: озвучка сразу переходит на то место, куда пользователь перелистнул */
-let seekT = 0, seekForce = null;
-function seekSoon(force) {
-  if (force != null) seekForce = force;
-  clearTimeout(seekT);
-  seekT = setTimeout(() => { const f = seekForce; seekForce = null; doSeek(f); }, 350);
-}
-function doSeek(force) {
-  if (!R || !TTS.show || rd.hidden) return;
-  let i;
-  if (force != null) i = force;
-  else {
-    const el = R.els[TTS.i]; let off;
-    if (set.mode === 'page') off = !el || Math.floor((el.offsetLeft + 2) / R.W) !== Math.round($r('rwrap').scrollLeft / R.W);
-    else { const r = el?.getBoundingClientRect(); off = !r || r.bottom < topLimit() || r.top > innerHeight; }
-    if (!off) return; // озвучиваемый абзац всё ещё на экране
-    i = cur();
-  }
-  if (TTS.playing) speakFrom(i);
-  else { TTS.i = i; TTS.k = 0; TTS.key = null; au.pause(); markTTS(i); }
-}
-function drawCtl() {
-  const c = $r('rctl'); if (!c || !R) return;
-  const was = rd.classList.contains('aud');
-  c.hidden = !TTS.show; rd.classList.toggle('aud', TTS.show);
-  c.innerHTML = TTS.show ? `<button data-c="b">${ic('skipb', 22)}</button><button data-c="p" class="pp">${ic(TTS.playing ? 'pause' : 'play', 22, 1)}</button><button data-c="f">${ic('skipf', 22)}</button><button data-c="s" class="rate">${set.rate || 1}×</button><button data-c="o">${ic('sliders', 22)}</button><button data-c="x">${ic('x', 22)}</button>` : '';
-  if (was !== TTS.show && $r('rwrap')) { const i = TTS.show && TTS.playing ? TTS.i : cur(); layout(); goPara(i); }
-}
-function markTTS(i) {
-  if (R) R.lock = Date.now() + 700; // программная прокрутка не считается перемоткой пользователя
-  document.querySelector('#rtext .tts')?.classList.remove('tts');
-  const el = R.els[i]; if (!el) return; el.classList.add('tts'); TTS.fp = null;
-  if (set.mode === 'page') TTS.fp = Math.floor((el.offsetLeft + 2) / R.W);
-  if (set.mode === 'page') { if (Math.floor((el.offsetLeft + 2) / R.W) !== Math.round($r('rwrap').scrollLeft / R.W)) goPara(i); }
-  else { const r = el.getBoundingClientRect(); if (r.top < topLimit() || r.bottom > innerHeight - 110) goPara(i); }
-  onPos();
-}
-// длинный абзац может идти через несколько страниц: пока он звучит, листаем вслед за голосом (по доле проигранного времени)
-function followFrac(f) {
-  if (!TTS.playing || !R) return;
-  const el = R.els[TTS.i], w = $r('rwrap'); if (!el || !w) return;
-  if (set.mode === 'page') {
-    const fr = [...el.getClientRects()]; if (fr.length < 2) return;
-    const wr = w.getBoundingClientRect(), tot = fr.reduce((s, r) => s + r.height, 0) || 1;
-    let acc = 0, pg = 0;
-    for (const r of fr) { pg = Math.floor((r.left - wr.left + w.scrollLeft + 2) / R.W); acc += r.height / tot; if (f < acc) break; }
-    const prev = TTS.fp ?? pg; TTS.fp = pg;
-    // листаем только в момент, когда голос пересёк границу страницы, и никогда не возвращаем назад — ручное листание не ломается
-    if (pg > prev && pg > Math.round(w.scrollLeft / R.W)) { R.lock = Date.now() + 700; w.scrollLeft = pg * R.W; onPos(); }
-  } else {
-    const r = el.getBoundingClientRect(), y = r.top + f * r.height;
-    if (r.height > 120 && r.top < innerHeight && r.bottom > topLimit() && y > innerHeight - 200) { R.lock = Date.now() + 700; $r('rscroll').scrollTop += y - topLimit() - 80; onPos(); }
-  }
-}
-// запасной вариант (без MediaSource): доля проигранного берётся из длительности текущего файла
-function followPage() { if (!TTS.playing || !R || !(au.duration > 0)) return; followFrac(Math.min(1, au.currentTime / au.duration)); }
-function speakFrom(i, k = 0, checked) {
-  // только нейроголос: если сервис ещё поднимается, проверяем заново и просим чуть подождать
-  if (!sileroOK) { checkSilero().then(ok => { if (ok) speakSilero(i); else toast('Нейроголос подключается, попробуйте через минуту'); }); return; }
-  return speakSilero(i);
-  if (!tts) return toast('Этот браузер не поддерживает озвучку');
-  tts.cancel(); const gen = ++TTS.gen;
-  Object.assign(TTS, { show: true, playing: true, i, k }); wake(true); drawCtl();
-  const run = () => {
-    if (gen !== TTS.gen) return;
-    const p = R?.paras[TTS.i]; if (!p) { stopTTS(); return toast('Конец книги'); }
-    markTTS(TTS.i); const ch = chunks(p.t);
-    const step = () => {
-      if (gen !== TTS.gen) return;
-      if (TTS.k >= ch.length) { TTS.i++; TTS.k = 0; return run(); }
-      const u = new SpeechSynthesisUtterance(ch[TTS.k]); u.lang = 'ru-RU'; u.rate = set.rate || 1;
-      const vs = tts.getVoices(), v = vs.find(v => v.name === set.voice) || vs.find(v => /^ru/i.test(v.lang)); if (v) u.voice = v;
-      u.onend = () => { if (gen === TTS.gen) { TTS.k++; step(); } };
-      u.onerror = e => { if (gen !== TTS.gen || e.error === 'interrupted' || e.error === 'canceled') return; pauseTTS(); toast('Ошибка озвучки: ' + e.error); };
-      tts.speak(u);
-    };
-    step();
-  };
-  run();
-}
-/* ---------- нейроголос с сервера (Piper) ---------- */
-const au = new Audio(); au.preload = 'auto';
-let sileroOK = false, SP = ['ruslan'];
-const VOICES = { ruslan: 1 };
-const curVoice = () => SP.includes(set.sv) ? set.sv : SP[0];
-const checkSilero = () => fetch('/api/tts/status').then(r => r.json()).then(d => { sileroOK = !!d.ok; const sp = (d.speakers || []).filter(x => VOICES[x]); if (sp.length) SP = sp; return sileroOK; }).catch(() => false);
-// сервис озвучки может подняться позже страницы: пока он недоступен, проверяем каждые 3 с (до 2 минут)
-checkSilero().then(ok => { if (ok) return; let n = 0; const t = setInterval(async () => { if (await checkSilero() || ++n > 40) clearInterval(t); }, 3000); });
-const eng = () => 'silero';
-function applyRate() { au.playbackRate = set.rate || 1; drawCtl(); }
-function waitUI(gen, p) {
-  // короткая надпись без таймера; показывается, только если ждать пришлось дольше ~0,6 с
-  const tm = setTimeout(() => { const st = $r('rst'); if (st && gen === TTS.gen && TTS.playing) st.textContent = 'Готовлю голос…'; }, 600);
-  p.finally(() => { clearTimeout(tm); const st = $r('rst'); if (st) st.textContent = ''; });
-}
-/* следующие абзацы скачиваются заранее, пока играет текущий: между абзацами нет пауз */
-const AHEAD = 4;
-const AB = new Map(); // ключ -> { p: промис, buf: ArrayBuffer }
-const abKey = (i, sp) => `${R.id}:${i}:${sp}`;
-function abGet(i, sp) {
-  const k = abKey(i, sp); if (AB.has(k)) return AB.get(k).p;
-  const e = {};
-  e.p = fetch(`/api/tts?id=${R.id}&i=${i}&sp=${sp}`).then(async r => {
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || `Ошибка сервера ${r.status}`);
-    }
-    return r.arrayBuffer();
-  }).then(b => { TTS.lastErr = ''; return (e.buf = b); })
-    .catch(err => { TTS.lastErr = err.message || String(err); AB.delete(k); return null; });
-  AB.set(k, e); return e.p;
-}
-function abAhead(i, sp) {
-  for (let n = 1; n <= AHEAD; n++) if (R.paras[i + n]) abGet(i + n, sp);
-  for (const [k] of [...AB]) { const [id, j] = k.split(':'); if (id !== R.id || +j < i - 1 || +j > i + 6) AB.delete(k); }
-}
-function abClear() { AB.clear(); }
-function setMedia() {
-  try {
-    const m = navigator.mediaSession, b = BOOKS[R.id]; if (!m) return;
-    m.metadata = new MediaMetadata({ title: b.title, artist: authorOf(b) });
-    m.setActionHandler('play', () => speakFrom(TTS.i)); m.setActionHandler('pause', pauseTTS);
-    m.setActionHandler('nexttrack', () => speakFrom(TTS.i + 1)); m.setActionHandler('previoustrack', () => speakFrom(Math.max(0, TTS.i - 1)));
-  } catch {}
-}
-// системный статус воспроизведения: помогает Android удерживать звук при выключенном экране
-function setPlayState(s) { try { if (navigator.mediaSession) navigator.mediaSession.playbackState = s || (TTS.playing ? 'playing' : 'paused'); } catch {} }
-
-/* ---------- непрерывный поток через MediaSource ----------
-   Раньше каждый абзац был отдельным файлом, а следующий запускался по событию «ended».
-   При выключенном экране Chrome на Android после конца файла теряет фоновое воспроизведение
-   (сбрасывает медиа-сервис) и звук пропадает. Поэтому склеиваем абзацы в один бесконечный
-   поток: элемент не «заканчивается», и озвучка не прерывается, даже когда экран погас. */
-const canMSE = typeof MediaSource === 'function' && MediaSource.isTypeSupported('audio/mpeg');
-let ms = null, sb = null, msUrl = null, appending = null, nextAppend = 0, eos = false, lastTrim = 0;
-const MQ = [], APP = []; // MQ — очередь на добавление, APP — границы абзацев на таймлайне потока
-function msReset() {
-  try { if (sb) sb.abort(); } catch {}
-  if (msUrl) { URL.revokeObjectURL(msUrl); msUrl = null; }
-  ms = null; sb = null; appending = null; nextAppend = 0; eos = false; lastTrim = 0; MQ.length = 0; APP.length = 0;
-}
-function msPump() {
-  if (!sb || appending || eos || !MQ.length || ms.readyState !== 'open' || sb.updating) return;
-  const e = MQ[0]; if (!e.buf) return; // абзацы добавляем строго по порядку
-  appending = MQ.shift();
-  try { sb.appendBuffer(new Uint8Array(appending.buf)); } catch { MQ.unshift(appending); appending = null; }
-}
-function msUpdateEnd() {
-  if (!appending) return msPump(); // это не добавление данных (например, подрезка буфера)
-  const i = appending.i; appending = null;
-  let end = 0; try { const b = sb.buffered; end = b.length ? b.end(b.length - 1) : 0; } catch {}
-  const prev = APP[APP.length - 1];
-  APP.push({ i, s: prev ? prev.e : 0, e: end });
-  if (i === TTS.i) onTick();
-  feed(); msPump();
-}
-function queuePara(n) {
-  const gen = TTS.gen, e = { i: n, buf: null };
-  MQ.push(e);
-  let attempts = 0;
-  const get = () => abGet(n, TTS.sp).then(b => {
-    if (gen !== TTS.gen || !TTS.playing) return;
-    if (b) { e.buf = b; msPump(); return; }
-    if (n < TTS.i) return;
-    if (n > TTS.i || ++attempts <= 3) { setTimeout(get, 1500); return; }
-    TTS.key = null; pauseTTS();
-    toast(TTS.lastErr ? `Ошибка нейроголоса: ${TTS.lastErr}` : 'Нейроголос не ответил');
-  });
-  get();
-}
-function feed() {
-  if (!sb || !R) return;
-  const limit = Math.min(R.paras.length - 1, TTS.i + AHEAD);
-  for (let n = nextAppend; n <= limit; n++) { nextAppend = n + 1; queuePara(n); }
-}
-// какой абзац звучит сейчас — по времени на таймлайне склеенного потока
-function onTick() {
-  if (!R || !TTS.playing || !APP.length) return;
-  const t = au.currentTime; let a = APP[0];
-  for (let k = APP.length - 1; k >= 0; k--) if (t >= APP[k].s - 0.05) { a = APP[k]; break; }
-  if (a.i !== TTS.i) { TTS.i = a.i; TTS.key = `${R.id}:${a.i}:${TTS.sp}`; markTTS(a.i); setMedia(); }
-  followFrac(Math.min(1, Math.max(0, (t - a.s) / ((a.e - a.s) || 1))));
-  feed();
-  const last = R.paras.length - 1;
-  if (a.i === last && nextAppend > last && !eos && a.e - t < 0.35) { // книга закончилась — даём доиграть и завершаем
-    eos = true; try { if (ms.readyState === 'open' && !sb.updating) ms.endOfStream(); } catch {}
-  }
-  const now = Date.now(); // не копим прослушанное и предзагруженное в памяти
-  if (now - lastTrim > 5000) {
-    lastTrim = now;
-    for (const [k] of [...AB]) { const [id, j] = k.split(':'); if (id !== R.id || +j < TTS.i - 2 || +j > TTS.i + AHEAD + 2) AB.delete(k); }
-    if (sb && !sb.updating && t > 90) {
-      try { const b = sb.buffered; if (b.length && b.start(0) < t - 60) sb.remove(b.start(0), t - 60); } catch {}
-      while (APP.length > 1 && APP[0].e < t - 60) APP.shift();
-    }
-  }
-}
-function startMSE(gen, i, sp) {
-  TTS.sp = sp;
-  msReset();
-  const media = new MediaSource();
-  ms = media; msUrl = URL.createObjectURL(media);
-  au.onended = () => { if (gen === TTS.gen && TTS.show) { stopTTS(); toast('Конец книги'); } };
-  au.onerror = () => {};
-  au.onplaying = () => { TTS.err = 0; };
-  au.ontimeupdate = () => { if (gen === TTS.gen) onTick(); };
-  au.onloadedmetadata = () => { au.playbackRate = set.rate || 1; };
-  media.addEventListener('sourceopen', () => {
-    if (gen !== TTS.gen) return;
-    try { sb = media.addSourceBuffer('audio/mpeg'); sb.mode = 'sequence'; } catch { sb = null; }
-    if (!sb) { if (msUrl) { URL.revokeObjectURL(msUrl); msUrl = null; } ms = null; return playChunks(gen, i, sp); } // MediaSource не осилил — старый способ
-    sb.addEventListener('updateend', () => { if (gen === TTS.gen) msUpdateEnd(); });
-    nextAppend = i;
-    const pr = abGet(i, sp); waitUI(gen, pr);
-    feed(); msPump();
-  });
-  au.src = msUrl; au.playbackRate = set.rate || 1;
-  au.play().catch(() => {});
-}
-// запасной способ: отдельный файл на каждый абзац (например, Safari без MediaSource)
-function playChunks(gen, i, sp) {
-  TTS.sp = sp; abClear();
-  const fail = () => {
-    if ((TTS.err = (TTS.err || 0) + 1) <= 3) { setTimeout(() => { if (gen === TTS.gen && TTS.playing) play(); }, 1500 * TTS.err); return; }
-    TTS.err = 0; TTS.key = null; pauseTTS();
-    toast(TTS.lastErr ? `Ошибка нейроголоса: ${TTS.lastErr}` : 'Нейроголос не ответил — нажмите ▶, чтобы продолжить');
-  };
-  const start = (i0, buf, url) => {
-    if (gen !== TTS.gen || TTS.i !== i0) { if (url) URL.revokeObjectURL(url); return; }
-    if (!buf) return fail();
-    au.src = url; au.playbackRate = set.rate || 1;
-    au.onended = () => { if (gen === TTS.gen) { URL.revokeObjectURL(url); TTS.i++; play(); } };
-    au.onerror = () => { if (gen === TTS.gen) fail(); };
-    au.onplaying = () => { TTS.err = 0; }; au.ontimeupdate = followPage;
-    au.play().catch(() => {});
-    abAhead(i0, sp);
-  };
-  const play = () => {
-    if (gen !== TTS.gen) return;
-    if (!R?.paras[TTS.i]) { stopTTS(); return toast('Конец книги'); }
-    TTS.key = `${R.id}:${TTS.i}:${sp}`; markTTS(TTS.i);
-    const i0 = TTS.i, buf = AB.get(abKey(i0, sp))?.buf;
-    if (buf) return start(i0, buf, URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' })));
-    const pr = abGet(i0, sp); waitUI(gen, pr); abAhead(i0, sp);
-    pr.then(b => start(i0, b, b && URL.createObjectURL(new Blob([b], { type: 'audio/mpeg' }))));
-  };
-  play();
-}
-function speakSilero(i) {
-  const sp = curVoice(), key = `${R.id}:${i}:${sp}`;
-  if (TTS.show && TTS.key === key && au.paused && !au.ended && au.src) { TTS.playing = true; au.play().catch(() => {}); wake(true); drawCtl(); setPlayState(); return; }
-  tts?.cancel(); const gen = ++TTS.gen; au.pause(); // старый абзац не доигрывает после перемотки
-  Object.assign(TTS, { show: true, playing: true, i, k: 0, key }); wake(true); drawCtl(); setMedia(); setPlayState();
-  if (canMSE) startMSE(gen, i, sp); else playChunks(gen, i, sp);
-}
-function pauseTTS() {
-  if (eng() === 'silero' && TTS.show) { au.pause(); TTS.playing = false; wake(false); drawCtl(); setPlayState('paused'); return; }
-  TTS.gen++; tts?.cancel(); TTS.playing = false; wake(false); drawCtl(); setPlayState('paused');
-}
-function stopTTS() {
-  TTS.gen++; tts?.cancel(); au.pause();
-  au.onended = null; au.onerror = null; au.ontimeupdate = null;
-  msReset(); abClear(); TTS.key = null; clearTimeout(TTS.sleepT);
-  try { au.removeAttribute('src'); au.load(); } catch {}
-  Object.assign(TTS, { show: false, playing: false, sleep: 0 }); wake(false);
-  document.querySelector('#rtext .tts')?.classList.remove('tts'); drawCtl(); setPlayState('none');
-}
-function audioPanel(el) {
-  el.innerHTML =
-    (sileroOK ? `<h4>Голос</h4><div class="seg wrap">${SP.map(x => `<button data-sv="${x}" class="${curVoice() === x ? 'on' : ''}">${vLabel(x)}</button>`).join('')}</div>`
-      : `<div class="meta" style="padding:0 0 12px">Нейроголос подключается, это займёт около минуты.</div>`) +
-    `<h4>Скорость речи</h4><div class="seg">${[.8, 1, 1.25, 1.5, 2].map(r => `<button data-r="${r}" class="${set.rate === r ? 'on' : ''}">${r}×</button>`).join('')}</div>
-    <h4 style="margin-top:16px">Таймер сна</h4><div class="seg">${[[0, 'Выкл'], [15, '15 мин'], [30, '30 мин'], [60, '60 мин']].map(([m, n]) => `<button data-sl="${m}" class="${TTS.sleep === m ? 'on' : ''}">${n}</button>`).join('')}</div>`;
-  el.onclick = e => {
-    const d = e.target.closest('button')?.dataset; if (!d) return;
-    if (d.sv) { set.sv = d.sv; store.set('set', set); TTS.key = null; if (TTS.show && TTS.playing && eng() === 'silero') speakSilero(TTS.i); panel('audio'); }
-    if (d.r) { set.rate = +d.r; store.set('set', set); applyRate(); panel('audio'); }
-    if (d.sl != null) { TTS.sleep = +d.sl; clearTimeout(TTS.sleepT); if (TTS.sleep) TTS.sleepT = setTimeout(() => { pauseTTS(); toast('Таймер сна: озвучка остановлена'); }, TTS.sleep * 6e4); panel('audio'); }
-  };
-  rd.appendChild(el);
-}
-if (tts) tts.getVoices();
-
 function closeReader() {
   if (rd.hidden) return;
   saveST(true);
-  stopTTS(); rd.hidden = true; rd.innerHTML = ''; R = null; document.body.style.overflow = ''; applySet();
+  rd.hidden = true; rd.innerHTML = ''; R = null; document.body.style.overflow = ''; applySet();
 }
 
 route();
