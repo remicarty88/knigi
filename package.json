@@ -1,7 +1,13 @@
 {
-  "name": "bookapp",
+  "name": "polka",
   "version": "1.0.0",
-  "type": "module",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "flibusta": "latest" }
+  "private": true,
+  "description": "Полка — аудиокниги: каталог, жанры, поиск и плеер",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": "20.x"
+  }
 }
